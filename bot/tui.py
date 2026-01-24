@@ -4,6 +4,8 @@ from textual.containers import Container
 from textual.binding import Binding
 from textual import work
 from textual.design import ColorSystem
+from rich.markup import escape
+from datetime import datetime
 import logging
 import asyncio
 
@@ -154,7 +156,8 @@ class MockbotTUI(App):
                  if not self.bot._ws.is_closed:
                      is_connected = True
             
-            # Fallback: If we have joined channels, we are connected
+            # Fallback: If we have joined channels, we are connected. 
+            # Do NOT use self.bot.nick as it is set at init before connection.
             if hasattr(self.bot, '_joined_channels') and len(self.bot._joined_channels) > 0:
                 is_connected = True
         except:
@@ -191,46 +194,47 @@ class MockbotTUI(App):
             
             self.bot = setup_bot(self.db_file, self.rebuild_cache, self.enable_tts)
             
-            # Hook logging
-            if hasattr(self.bot, 'logger'):
-                self.bot.logger.addHandler(self.log_handler)
+            # Determine bot voice preset for self-messages
+            self.bot.tui_callback = self.handle_bot_event
             
-            # Inject ready listener for debugging
-            @self.bot.event
-            async def event_ready():
-                self.write_log(f"[bold green]EVENT: Bot is ready! Logged in as {self.bot.nick}[/bold green]")
-
-            # Inject message listener for TUI display
-            @self.bot.event
-            async def event_message(message):
-                # Avoid displaying bot's own messages if desired, but usually we want to see them
-                # echo are messages sent by us
-                try:
-                    if message.echo:
-                        return # We handle rendering our own input locally
-                    
-                    author = message.author.name if message.author else "Unknown"
-                    content = escape(message.content)
-                    
-                    # Timestamps
-                    timestamp = datetime.now().strftime("%H:%M")
-                    
-                    # Formatting
-                    # [14:20] <User> Message
-                    formatted = f"[dim white]{timestamp}[/dim white] [bold cyan]{author}[/bold cyan] {content}"
-                    
-                    # Highlight mentions
-                    if self.bot.nick and self.bot.nick.lower() in content.lower():
-                        formatted = formatted.replace(self.bot.nick, f"[bold yellow]{self.bot.nick}[/bold yellow]")
-                        
-                    self.write_log(formatted)
-                except Exception as e:
-                    self.write_log(f"[red]Error rendering message: {e}[/red]")
-
             self.write_log(f"[bold green]✓ Bot created. Token: ...{self.bot._http.token[-4:]}[/bold green]")
             self.write_log("[dim]Connecting to Twitch...[/dim]")
             
             await self.bot.start()
+            
+        except Exception as e:
+            self.write_log(f"[bold red]❌ Bot Crashed:[/bold red] {e}")
+            import traceback
+            self.write_log(traceback.format_exc())
+
+    async def handle_bot_event(self, event_type, data):
+        """Callback received explicitly from Bot instance."""
+        try:
+            if event_type == 'active':
+                nick = data
+                self.write_log(f"[bold green]EVENT: Bot is ready! Logged in as {nick}[/bold green]")
+                
+            elif event_type == 'message':
+                message = data
+                # We show ALL messages, even our own echoes if core.py sends them (it usually filters echoes before event_message, but let's see)
+                # Core.py event_message aborts on self-message early. 
+                # If we put the callback AT THE TOP of event_message in core.py, we see everything.
+                
+                author = message.author.name if message.author else "Unknown"
+                content = escape(message.content)
+                timestamp = datetime.now().strftime("%H:%M")
+                
+                # Formatting: [14:20] <User> Message
+                formatted = f"[dim white]{timestamp}[/dim white] [bold cyan]{author}[/bold cyan] {content}"
+                
+                # Highlight mentions
+                if self.bot and self.bot.nick and self.bot.nick.lower() in content.lower():
+                    formatted = formatted.replace(self.bot.nick, f"[bold yellow]{self.bot.nick}[/bold yellow]")
+                    
+                self.write_log(formatted)
+                
+        except Exception as e:
+            self.write_log(f"[bold red]TUI Error processing event: {e}[/bold red]")
             
         except Exception as e:
             self.write_log(f"[bold red]❌ Bot Crashed:[/bold red] {e}")
