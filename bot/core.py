@@ -250,7 +250,7 @@ class Bot(commands.Bot):
         self.logger = logging.getLogger("bot")
         self.logger.setLevel(logging.INFO)
         formatter = logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s")
-        handler = logging.FileHandler(filename="app.log", encoding="utf-8", mode="w")
+        handler = logging.FileHandler(filename="logs/mockbot.log", encoding="utf-8", mode="w")
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         self.color_manager = ColorManager()
@@ -261,9 +261,8 @@ class Bot(commands.Bot):
         self.channel_settings = {}  # Initialize the channel settings dictionary
         self.db_file = db_file
         self.load_channel_settings()  # Populate channel settings
-        self.load_channel_settings()  # Populate channel settings
+
         self.rebuild_cache = rebuild_cache
-        self.active_topics = {}  # Stores current seeded topic per channel
         
         # Add cache update threshold setting
         self.cache_update_threshold = 3600 * 24  # 24 hours by default

@@ -330,40 +330,4 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         status_text = "enabled" if new_tts_status else "disabled"
         await ctx.send(f"TTS {status_text} for channel {target_channel}.")
 
-    elif setting == "topic":
-        # Check permissions
-        config = configparser.ConfigParser()
-        config.read("settings.conf")
-        bot_owner = config.get("auth", "owner")
-        
-        conn = sqlite3.connect(self.db_file)
-        c = conn.cursor()
-        c.execute("SELECT owner, trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-        result = c.fetchone()
-        conn.close()
-        
-        if result is None:
-            await ctx.send("Channel not found.")
-            return
-            
-        channel_owner, trusted_users = result
-        trusted_list = trusted_users.split(",") if trusted_users else []
-        
-        if ctx.author.name != bot_owner and ctx.author.name != channel_owner and ctx.author.name not in trusted_list:
-            await ctx.send("Permission denied.")
-            return
 
-        # Set the topic
-        if new_value:
-            if new_value.lower() == "clear" or new_value.lower() == "none":
-                if ctx.channel.name in self.active_topics:
-                    del self.active_topics[ctx.channel.name]
-                await ctx.send(f"Topic cleared for {ctx.channel.name}. Back to random generation.")
-            else:
-                self.active_topics[ctx.channel.name] = new_value
-                await ctx.send(f"Topic set to '{new_value}' for {ctx.channel.name}. I'll try to focus on that.")
-        else:
-            current = self.active_topics.get(ctx.channel.name, "None")
-            await ctx.send(f"Current topic: {current}. Use '!mockbot topic [word]' to set, or 'clear' to reset.")
-    # Build the model
-    #self.text_model = markovify.Text(self.text)

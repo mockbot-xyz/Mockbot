@@ -54,7 +54,7 @@ show_help() {
     echo "  stop              Stop the bot"
     echo "  restart           Restart the bot"
     echo "  status            Check if running"
-    echo "  cli               Start interactive CLI (Recommended)"
+    echo "  cli [tts]         Start interactive CLI (add 'tts' to enable voice)"
     echo "  logs [lines]      View logs"
     echo "  setup-tts         Install TTS dependencies"
     echo "  clean             Remove temporary files"
@@ -144,7 +144,25 @@ cmd_logs() {
 cmd_cli() {
     echo -e "${CYAN}Starting CLI Mode...${NC}"
     source "$VENV_DIR/bin/activate" 2>/dev/null || true
-    python main.py --tts "$@"
+    
+    local use_tts=false
+    local args=()
+    
+    for arg in "$@"; do
+        if [[ "$arg" == "tts" || "$arg" == "--tts" ]]; then
+            use_tts=true
+        else
+            args+=("$arg")
+        fi
+    done
+    
+    if [ "$use_tts" = true ]; then
+        echo -e "${GREEN}TTS Enabled${NC}"
+        python main.py --tts "${args[@]}"
+    else
+        echo -e "${YELLOW}TTS Disabled (use './launch.sh cli tts' to enable)${NC}"
+        python main.py "${args[@]}"
+    fi
 }
 
 cmd_setup_tts() {
