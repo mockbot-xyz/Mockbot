@@ -234,7 +234,7 @@ class Bot(commands.Bot):
         )
         
         # Initialize other variables
-        print("Initializing Bot class...")
+        # print("Initializing Bot class...")
         self.prefix = prefix
         self.my_logger = Logger()
         self.my_logger.setup_logger()
@@ -270,7 +270,7 @@ class Bot(commands.Bot):
         
         # Load cache build times before attempting to build model
         self.cache_build_times = self.load_last_cache_build_times()
-        print(f"Loaded cache build times: {self.cache_build_times}")
+        # print(f"Loaded cache build times: {self.cache_build_times}")
         
         self.load_text_and_build_model()
         self.first_model_update = True
@@ -289,7 +289,7 @@ class Bot(commands.Bot):
             self.verbose_heartbeat_log = config.getboolean('settings', 'verbose_heartbeat_log')
         except (configparser.NoSectionError, configparser.NoOptionError):
             self.verbose_heartbeat_log = False # Default to False if not found
-            print(f"{YELLOW}Warning: 'verbose_heartbeat_log' not found in settings.conf, defaulting to False.{RESET}")
+            # print(f"{YELLOW}Warning: 'verbose_heartbeat_log' not found in settings.conf, defaulting to False.{RESET}")
 
         self._joined_channels = set()
 
@@ -383,7 +383,7 @@ class Bot(commands.Bot):
             # The library will strip # internally if present
             clean_name = channel_name.lstrip('#')
             
-            print(f"{YELLOW}Attempting to join channel: {channel_name} (clean: {clean_name}){RESET}")
+            # print(f"{YELLOW}Attempting to join channel: {channel_name} (clean: {clean_name}){RESET}")
             
             # Join the channel
             try:
@@ -443,7 +443,7 @@ class Bot(commands.Bot):
                 except Exception as db_error:
                     print(f"{RED}Database update error for channel {clean_name}: {db_error}{RESET}")
                 
-                print(f"{GREEN}✅ Successfully joined channel: {channel_name}{RESET}")
+                # print(f"{GREEN}✅ Successfully joined channel: {channel_name}{RESET}")
                 return True
             else:
                 print(f"{RED}❌ Failed to join channel: {channel_name}{RESET}")
@@ -514,14 +514,16 @@ class Bot(commands.Bot):
                         continue
                     
                     # Attempt to join
-                    print(f"{YELLOW}Attempting to join channel: {channel_name}{RESET}")
+                    # print(f"{YELLOW}Attempting to join channel: {channel_name}{RESET}")
                     success = await self.join_channel(channel_name)
                     
                     if success:
                         join_success += 1
                         new_joins += 1
+                        print(f"{GREEN}✓ Joined {channel_name}{RESET}")
                     else:
                         join_failure += 1
+                        print(f"{RED}✗ Failed {channel_name}{RESET}")
                         
                 except Exception as e:
                     join_failure += 1
@@ -545,7 +547,7 @@ class Bot(commands.Bot):
         
         # Start the periodic task
         self.loop.create_task(check_periodically())
-        print(f"Started periodic channel check (every {interval} seconds)")
+        # print(f"Started periodic channel check (every {interval} seconds)")
     
     def ensure_channel_configs(self):
         """Make sure all channels have config entries in the database with proper defaults."""
@@ -701,7 +703,8 @@ class Bot(commands.Bot):
 
         # Print the table outside the loop, after processing all files
         headers = ["Channel", "Brain Size", "Brain Status", "Brain"]
-        print(tabulate(files_data, headers=headers, tablefmt="pretty", numalign="right"))
+        # print(tabulate(files_data, headers=headers, tablefmt="pretty", numalign="right"))
+        print(f"Brain loaded: {total_lines:,} lines active.")
 
     def determine_cache_status(self, channel_name, file_text, create_individual_caches, cache_directory):
         """Determine cache status for a given channel"""
@@ -1272,7 +1275,7 @@ class Bot(commands.Bot):
                         print(f"Error updating channel connection status in DB: {e}")
             else:
                 # Only print failure if verbose or if this was explicitly in initial_channels
-                if verbose or channel in self.initial_channels:
+                if verbose or channel in self.channels:
                     print(f"{RED}✗ Failed to join {formatted_channel} channel - will retry in next periodic check{RESET}")
                     
                 # Make sure database shows it's not connected
@@ -2166,13 +2169,13 @@ def setup_bot(db_file, rebuild_cache=False, enable_tts=False):
             print("⚠️ No channels found in config. Using single channel.")
             channels_str = nick  # Default to bot's own channel as fallback
     
-    print(f"Found channels string: {channels_str}")
+    # print(f"Found channels string: {channels_str}")
     
     # Strip whitespace and ensure channels start with #
     channels = [f"#{ch.strip()}" if not ch.strip().startswith('#') else ch.strip() 
                 for ch in channels_str.split(',')]
     
-    print(f"Bot will join these channels: {channels}")
+    # print(f"Bot will join these channels: {channels}")
     
     # Initialize bot instance
     bot = Bot(

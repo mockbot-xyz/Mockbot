@@ -65,9 +65,10 @@ def main():
         parser.add_argument("--rebuild-cache", action="store_true", help="Rebuild markov models")
         parser.add_argument("--tts", action="store_true", help="Enable TTS functionality")
         parser.add_argument("--voice-preset", dest="voice_preset", type=str, help="Set default voice preset for TTS")
+        parser.add_argument("--tui", action="store_true", help="Enable Textual TUI mode")
         args = parser.parse_args()
 
-        print(f"Arguments parsed: {args}")
+        # print(f"Arguments parsed: {args}")
         
         enable_tts_global = args.tts # Set the global flag
         
@@ -94,7 +95,7 @@ def main():
                 print(f"An unexpected error occurred during TTS module import: {e}")
                 enable_tts_global = False
 
-        print("Starting CLI TUI...")
+        # print("Starting CLI TUI...")
         cli_mode = True
 
         # Pre-flight Token Check
@@ -116,29 +117,35 @@ def main():
             except Exception as e:
                 print(f" (SKIP - Check failed: {e})")
 
-        print("Setting up database...")
+        # print("Setting up database...")
         db_file = "messages.db"
         ensure_db_setup(db_file)
-        print("Database setup complete.")
+        # print("Database setup complete.")
             
-        print("Setting up bot...")
-        # Create event loop for TwitchIO
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        bot_instance = setup_bot(db_file, rebuild_cache=args.rebuild_cache, enable_tts=enable_tts_global)
-        print("Bot setup complete.")
-        
-        # Create PID file
-        try:
-            with open("bot.pid", "w") as f:
-                f.write(str(os.getpid()))
-        except IOError:
-            pass
-
         # Execution Mode
-        # Simple CLI mode - direct output
-        sys.stdout.flush()
-        bot_instance.run()
+        if args.tui:
+            # TUI Mode
+            # We defer bot creation to Textual's loop
+            import bot.tui
+            bot.tui.start_tui(db_file, args.rebuild_cache, enable_tts_global)
+        else:
+            # CLI Mode
+            print("Setting up bot...")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            bot_instance = setup_bot(db_file, rebuild_cache=args.rebuild_cache, enable_tts=enable_tts_global)
+            print("Bot setup complete.")
+            
+            # Create PID file
+            try:
+                with open("bot.pid", "w") as f:
+                    f.write(str(os.getpid()))
+            except IOError:
+                pass
+
+            # Simple CLI mode - direct output
+            sys.stdout.flush()
+            bot_instance.run()
 
         print("Bot run loop has exited.")
         
@@ -167,7 +174,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, graceful_shutdown)
     signal.signal(signal.SIGTERM, graceful_shutdown)
     
-    print("Starting Mockbot...")
+    # print("Starting Mockbot...")
     main()
     # If main() completes without sys.exit(), it means bot.run() returned.
     print("Mockbot main function has completed. Performing final cleanup...")

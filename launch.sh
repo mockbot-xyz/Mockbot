@@ -142,7 +142,7 @@ cmd_logs() {
 }
 
 cmd_cli() {
-    echo -e "${CYAN}Starting CLI Mode...${NC}"
+    # echo -e "${CYAN}Starting CLI Mode...${NC}"
     source "$VENV_DIR/bin/activate" 2>/dev/null || true
     
     local use_tts=false
@@ -157,10 +157,10 @@ cmd_cli() {
     done
     
     if [ "$use_tts" = true ]; then
-        echo -e "${GREEN}TTS Enabled${NC}"
+        echo -e "${GREEN}🔊 TTS Enabled${NC}"
         python main.py --tts "${args[@]}"
     else
-        echo -e "${YELLOW}TTS Disabled (use './launch.sh cli tts' to enable)${NC}"
+        echo -e "${CYAN}🔇 TTS Disabled (add 'tts' to enable)${NC}"
         python main.py "${args[@]}"
     fi
 }
@@ -174,6 +174,12 @@ cmd_setup_tts() {
     else
         echo -e "${RED}requirements-tts.txt not found${NC}"
     fi
+}
+
+cmd_tui() {
+    echo -e "${CYAN}Starting TUI Mode...${NC}"
+    source "$VENV_DIR/bin/activate" 2>/dev/null || true
+    python main.py --tui "$@"
 }
 
 cmd_clean() {
@@ -190,6 +196,7 @@ case "${1:-}" in
     restart) cmd_restart ;;
     status) cmd_status ;;
     cli) cmd_cli "${@:2}" ;; # Pass remaining args
+    tui) cmd_tui "${@:2}" ;; 
     logs) cmd_logs "${2:-50}" ;;
     setup-tts) cmd_setup_tts ;;
     clean) cmd_clean ;;

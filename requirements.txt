@@ -10,3 +10,4 @@ numpy>=1.26.0
 
 # NLTK (also needed for TTS)
 nltk>=3.8.1
+textual>=0.47.1
