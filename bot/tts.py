@@ -91,12 +91,13 @@ class TTSModelCache:
                 
                 # Apply optimizations for CUDA
                 if device.type == "cuda":
+                    # PyTorch 2.0+ uses SDPA automatically, BetterTransformer is legacy/deprecated
+                    # and requires 'optimum' which is problematic on bleeding edge versions.
                     try:
-                        model.to_bettertransformer()
                         model.enable_cpu_offload()
-                        logging.debug(f"TTS: Applied CUDA optimizations for {model_path}")
+                        logging.debug(f"TTS: Enabled CPU offload for {model_path}")
                     except Exception as e:
-                        logging.warning(f"TTS: Could not apply CUDA optimizations: {e}")
+                        logging.warning(f"TTS: Could not apply optimizations: {e}")
                 
                 # Configure tokenizer
                 if processor.tokenizer.pad_token_id is None:
@@ -686,13 +687,15 @@ def start_tts_processing(input_text, channel_name, db_file='./messages.db', mess
     # logging.info(f"TTS processing thread dispatched for original message_id {message_id} in channel {channel_name}.")
 
 def notify_new_audio_available(channel_name, message_id):
+    # Webapp removed, notification disabled
+    pass
     # Read webapp port from config
-    config = configparser.ConfigParser()
-    config.read('settings.conf')
-    webapp_port = config.get('webapp', 'port', fallback='8347')
+    # config = configparser.ConfigParser()
+    # config.read('settings.conf')
+    # webapp_port = config.get('webapp', 'port', fallback='8347')
 
     # Define the URL of the Flask endpoint
-    url = f'http://localhost:{webapp_port}/new-audio-notification'
+    # url = f'http://localhost:{webapp_port}/new-audio-notification'
 
     # Data to send (optional, you can customize this)
     data = {
@@ -707,5 +710,8 @@ def notify_new_audio_available(channel_name, message_id):
             logging.debug("Notification sent successfully to webapp for new audio.")
         else:
             logging.warning(f"Failed to send new audio notification to webapp (status: {response.status_code})")
+    except requests.exceptions.ConnectionError:
+        # Expected if running in CLI mode without webapp
+        logging.debug(f"Webapp notification skipped: Connection to {url} refused (Webapp likely offline).")
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error sending new audio notification to webapp: {e}")
+        logging.warning(f"Error sending new audio notification: {e}")

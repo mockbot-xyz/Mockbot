@@ -239,6 +239,11 @@ class Logger:
     # that is provided by twitchio
 #####################################################
 class CustomHandler(logging.StreamHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def emit(self, record):
         # Skip console output if the record was marked to skip (already printed directly)
         if hasattr(record, 'skip_console') and record.skip_console:

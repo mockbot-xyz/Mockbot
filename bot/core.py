@@ -16,11 +16,11 @@ from colorama import init
 from datetime import datetime
 import threading
 from tabulate import tabulate
-from utils.logger import Logger
-from utils.color_control import ColorManager
-from commands.ansv_command import ansv_command
-from utils.db_setup import ensure_db_setup
-from utils.tts import process_text, start_tts_processing # Added start_tts_processing
+from bot.logger import Logger
+from bot.color_control import ColorManager
+from bot.commands import mockbot_command
+from bot.db import ensure_db_setup
+from bot.tts import process_text, start_tts_processing # Added start_tts_processing
 
 config = configparser.ConfigParser()
 config.read("settings.conf")
@@ -261,7 +261,9 @@ class Bot(commands.Bot):
         self.channel_settings = {}  # Initialize the channel settings dictionary
         self.db_file = db_file
         self.load_channel_settings()  # Populate channel settings
+        self.load_channel_settings()  # Populate channel settings
         self.rebuild_cache = rebuild_cache
+        self.active_topics = {}  # Stores current seeded topic per channel
         
         # Add cache update threshold setting
         self.cache_update_threshold = 3600 * 24  # 24 hours by default
@@ -280,7 +282,7 @@ class Bot(commands.Bot):
         
         self.enable_tts = enable_tts
         if self.enable_tts:
-            from utils import tts
+            from bot import tts
             tts.initialize_tts()
         
         # Read verbose_heartbeat_log setting
@@ -944,14 +946,14 @@ class Bot(commands.Bot):
         except Exception as e:
             print(f"Error saving cache build times: {e}")
 
-    @commands.command(name="ansv")
-    async def ansv_wrapper(self, ctx, setting=None, *args):
-        """Enhanced command handler for ansv commands"""
+    @commands.command(name="mockbot", aliases=["mb"])
+    async def mockbot_wrapper(self, ctx, setting=None, *args):
+        """Enhanced command handler for Mockbot commands"""
         channel_name = ctx.channel.name
 
         # If no setting provided, show description
         if not setting:
-            await ctx.send("ANSV utilizes Markov chain modeling to generate text. It learns from the channel's conversation history, mapping how words connect to each other, then creates new messages using those probability distributions.")
+            await ctx.send("Mockbot utilizes Markov chain modeling to generate text. It learns from the channel's conversation history, mapping how words connect to each other, then creates new messages using those probability distributions.")
             return
 
         # Convert setting to lowercase for easier comparison
@@ -959,7 +961,7 @@ class Bot(commands.Bot):
 
         # Show settings help
         if setting == "settings":
-            await ctx.send("Usage: !ansv [setting] [value]. Available settings: trusted, voice, tts, lines, time")
+            await ctx.send("Usage: !mockbot [setting] [value]. Available settings: trusted, voice, tts, lines, time")
             return
 
         if setting == "trusted":
@@ -978,7 +980,7 @@ class Bot(commands.Bot):
                 # Add or remove trusted user
                 action = args[0].lower()
                 if len(args) < 2:
-                    await ctx.send("Usage: !ansv trusted add/remove [username]")
+                    await ctx.send("Usage: !mockbot trusted add/remove [username]")
                     return
                     
                 username = args[1].lower()
@@ -995,8 +997,8 @@ class Bot(commands.Bot):
                 else:
                     await ctx.send("Unknown action. Use add or remove")
         else:
-            # Call the original ansv_command for other settings
-            await ansv_command(self, ctx, setting, args[0] if args else None, enable_tts=self.enable_tts)
+            # Call the original mockbot_command for other settings
+            await mockbot_command(self, ctx, setting, args[0] if args else None, enable_tts=self.enable_tts)
 
     @staticmethod
     def convert_size(size_bytes):
@@ -1508,7 +1510,7 @@ class Bot(commands.Bot):
 
             # Generate a response using the appropriate model.
             if row:
-                response = (self.general_model.make_sentence() if row[0] else self.models.get(channel_name, self.general_model).make_sentence())
+
 
                 # If a response was generated.
                 if response:

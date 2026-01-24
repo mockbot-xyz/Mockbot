@@ -83,22 +83,16 @@ class MarkovHandler:
 
 
 
-    def generate_message(self, channel_name=None, max_attempts=8, max_fallbacks=2):
+    def generate_message(self, channel_name=None, max_attempts=15, max_fallbacks=2, seed_word=None):
         """
-        Generate a message using the specified channel's model, or the general model if None.
-        
-        Args:
-            channel_name (str, optional): Channel name to generate message for. Defaults to None (general).
-            max_attempts (int, optional): Maximum attempts to generate a message. Defaults to 8.
-            max_fallbacks (int, optional): Maximum number of fallback attempts. Defaults to 2.
-            
-        Returns:
-            str: Generated message or None if generation failed
+        Generate a message using the specified channel's model.
+        Supports topic seeding via 'seed_word'.
         """
         # Keep track of fallbacks to prevent infinite recursion
         fallback_count = getattr(self, '_fallback_count', 0)
         self._fallback_count = fallback_count 
         
+        # ... (Validation code omitted for brevity) ...
         # If we've exceeded max fallbacks, return a default message
         if fallback_count > max_fallbacks:
             self.logger.warning(f"Max fallback attempts ({max_fallbacks}) reached")
@@ -110,127 +104,110 @@ class MarkovHandler:
             fallback_to_general = True
             
             if channel_name is None or channel_name == 'general':
-                # Use the general model
                 model_file = os.path.join(self.cache_directory, "general_markov_model.json")
                 model_name = "general_markov"
-                # Don't fallback to general since we're already using it
                 fallback_to_general = False 
             else:
-                # Use the channel-specific model
                 model_file = os.path.join(self.cache_directory, f"{channel_name}_model.json")
                 model_name = channel_name
             
             # Check if model exists
             if not os.path.exists(model_file):
                 self.logger.error(f"Model file not found: {model_file}")
-                # Try general model as fallback if appropriate
                 if fallback_to_general:
                     self.logger.info(f"Falling back to general model for channel: {channel_name}")
                     self._fallback_count = fallback_count + 1
-                    return self.generate_message("general", max_attempts, max_fallbacks)
+                    return self.generate_message("general", max_attempts, max_fallbacks, seed_word)
                 return None
             
-            # Load the model
+            # Load the model directly if not in memory
             model = self.models.get(model_name)
             if not model:
+                # ... (Model loading logic same as before) ...
                 self.logger.info(f"Loading model: {model_name}")
                 try:
                     with open(model_file, 'r') as f:
                         model_data = json.load(f)
                     self.models[model_name] = model_data
                     model = model_data
-                except json.JSONDecodeError as e:
-                    self.logger.error(f"Failed to parse model JSON for {model_name}: {e}")
-                    if fallback_to_general:
-                        self.logger.info(f"JSON error with {channel_name} model, trying general model")
-                        self._fallback_count = fallback_count + 1
-                        return self.generate_message("general", max_attempts, max_fallbacks)
-                    return None
                 except Exception as e:
                     self.logger.error(f"Error loading model {model_name}: {e}")
                     if fallback_to_general:
-                        self.logger.info(f"Error loading {channel_name} model, trying general model")
                         self._fallback_count = fallback_count + 1
-                        return self.generate_message("general", max_attempts, max_fallbacks)
+                        return self.generate_message("general", max_attempts, max_fallbacks, seed_word)
                     return None
             
-            # Generate message using markovify's built-in method with multiple attempts
-            # The model might be a Markovify model or a JSON representation
-            message = None
-            
-            # Log the generation attempt for monitoring
-            self.logger.info(f"Attempting to generate message for {channel_name} (attempt 1/{max_attempts})")
-            
+            # Convert JSON dict back to model object if needed
             if isinstance(model, dict):
-                # It's already the JSON, use it to create a Text model
                 try:
                     model_obj = markovify.Text.from_json(json.dumps(model))
-                    
-                    # Make multiple attempts
-                    for attempt in range(1, max_attempts + 1):
-                        try:
-                            message = model_obj.make_sentence(tries=100)  # More internal tries as well
-                            if message:
-                                self.logger.info(f"Generated message on attempt {attempt}/{max_attempts}")
-                                break
-                            elif attempt < max_attempts:
-                                self.logger.debug(f"Failed to generate on attempt {attempt}/{max_attempts}, trying again")
-                        except Exception as e:
-                            self.logger.error(f"Error during sentence generation (attempt {attempt}): {e}")
                 except Exception as e:
-                    self.logger.error(f"Failed to create model from JSON for {channel_name}: {e}")
-                    # Try fallback if appropriate
+                    self.logger.error(f"Failed to create model from JSON: {e}")
                     if fallback_to_general:
-                        self.logger.info(f"Error creating model for {channel_name}, trying general model")
                         self._fallback_count = fallback_count + 1
-                        return self.generate_message("general", max_attempts, max_fallbacks)
+                        return self.generate_message("general", max_attempts, max_fallbacks, seed_word)
                     return None
             else:
-                # It's already a model object
-                # Make multiple attempts
-                for attempt in range(1, max_attempts + 1):
-                    try:
-                        message = model.make_sentence(tries=100)  # More internal tries as well
-                        if message:
-                            self.logger.info(f"Generated message on attempt {attempt}/{max_attempts}")
-                            break
-                        elif attempt < max_attempts:
-                            self.logger.debug(f"Failed to generate on attempt {attempt}/{max_attempts}, trying again")
-                    except Exception as e:
-                        self.logger.error(f"Error during sentence generation (attempt {attempt}): {e}")
+                model_obj = model
+
+            # Generation Loop
+            message = None
+            self.logger.info(f"Generating for {channel_name} (Topic: {seed_word})")
             
-            # If still no message, try fallback to general model
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    if seed_word:
+                        # Try to start sentence with the seed word
+                        try:
+                            message = model_obj.make_sentence_with_start(seed_word, strict=False, tries=20)
+                        except (KeyError, markovify.text.ParamError):
+                            # Seed word not found in model state, ignore seed or try generic generation
+                            self.logger.debug(f"Seed word '{seed_word}' not found in start tokens.")
+                            message = None
+                            
+                        # If start fails, maybe just try normal generation which might include it by chance?
+                        # Or we could try checking if word exists at all.
+                        # For now, if seed fails, fall back to random sentence in next loop iteration or:
+                        if not message:
+                             message = model_obj.make_sentence(tries=50) # Tries reduced for fallback
+                    else:
+                        message = model_obj.make_sentence(tries=100)
+                    
+                    if message:
+                        if self.validate_message(message):
+                            self.logger.info(f"Generated valid message: '{message}'")
+                            break
+                        else:
+                            self.logger.debug(f"Generated message rejected (validation): '{message}'")
+                            message = None # Reset
+                            
+                except Exception as e:
+                    self.logger.error(f"Error generation attempt {attempt}: {e}")
+
+            # Fallback logic
             if not message and fallback_to_general:
                 self.logger.info(f"Couldn't generate message for {channel_name}, trying general model")
                 self._fallback_count = fallback_count + 1
-                return self.generate_message("general", max_attempts, max_fallbacks)
+                return self.generate_message("general", max_attempts, max_fallbacks, seed_word)
             
             # Return either the generated message or a default message
             if message:
                 # Reset fallback counter on success
                 self._fallback_count = 0
                 return message
-            else:
-                # Only provide a default message if we can't fallback or are already in a fallback
-                if not fallback_to_general or fallback_count > 0:
-                    self.logger.warning(f"Failed to generate message for {channel_name or 'general'} after {max_attempts} attempts")
-                    self._fallback_count = 0  # Reset for next call
-                    return "Could not generate a message at this time."
-                return None
-                
-        except Exception as e:
-            self.logger.error(f"Error generating message: {e}")
-            if fallback_to_general and channel_name != "general":
-                self.logger.info(f"Error with {channel_name} model, trying general model")
-                try:
-                    self._fallback_count = fallback_count + 1
-                    return self.generate_message("general", max_attempts, max_fallbacks)
-                except Exception as e2:
-                    self.logger.error(f"Error with fallback to general model: {e2}")
             
-            # Reset fallback counter and return default message
-            self._fallback_count = 0  # Reset for next call
-            return "Could not generate a message due to an error."
+    def validate_message(self, text):
+        """Filter out low quality messages"""
+        if not text: return False
+        
+        # Too short?
+        words = text.split()
+        if len(words) < 3: return False
+        
+        # Start matches end? (Looping)
+        # e.g. "To be or not to be" is fine, but "test test test" is filtered by Markovify usually.
+        # Check for balanced quotes/parentheses?
+        return True
 
     def get_available_models(self):
         """Get a list of available models from the cache directory with details."""
@@ -348,12 +325,14 @@ class MarkovHandler:
             self.logger.error(f"Error in rebuild_all_caches: {e}")
             return False
 
-    def rebuild_cache_for_channel(self, channel_name, logs_directory):
+    def rebuild_cache_for_channel(self, channel_name, logs_directory, state_size=3):
         """
         Rebuilds the cache for a single channel and tracks build time.
+        state_size: Markov chain state size (2=chaotic, 3=coherent).
         """
         import time
         
+        # ... (validation blocks omitted for brevity, keeping existing) ...
         # Check if inputs are valid
         if not channel_name:
             self.logger.error("Empty channel name provided to rebuild_cache_for_channel")
@@ -381,7 +360,7 @@ class MarkovHandler:
         try:
             # Record start time
             start_time = time.time()
-            self.logger.info(f"Starting rebuild of cache for channel: {channel_name}")
+            self.logger.info(f"Starting rebuild of cache for channel: {channel_name} (state_size={state_size})")
             
             # Build the model
             with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as file:
@@ -392,8 +371,9 @@ class MarkovHandler:
                 self.record_build_time(channel_name, start_time, 0, False)
                 return False
                 
-            # Create the Markov model
-            model = markovify.Text(text)
+            # Create the Markov model with configurable state size
+            # state_size=3 means 3 words lookback -> more coherent but needs more data
+            model = markovify.Text(text, state_size=state_size)
             
             # Store in memory and save to cache
             self.models[channel_name] = model

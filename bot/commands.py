@@ -4,7 +4,7 @@ from datetime import datetime
 from twitchio.ext import commands
 import sqlite3
 from tabulate import tabulate
-from utils.tts import start_tts_processing
+from bot.tts import start_tts_processing
 
 YELLOW = "\x1b[33m" #xterm colors. dunno why tbh
 RESET = "\x1b[0m"
@@ -12,9 +12,9 @@ RED = "\x1b[31m"
 GREEN = "\x1b[32m"
 PURPLE = "\x1b[35m"
 
-async def ansv_command(self, ctx, setting=None, new_value=None, **kwargs):
+async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
     if setting is None:
-        await ctx.send("ANSV Bot - A Not So Vanilla Twitch Bot")
+        await ctx.send("Mockbot - A Not So Vanilla Twitch Bot")
         return
 
     # Fetch channel-specific trusted users and owner
@@ -310,24 +310,7 @@ async def ansv_command(self, ctx, setting=None, new_value=None, **kwargs):
             conn.close()
             return
 
-        # Check if the channel owner has TTS access (Premium subscription)
-        # Bot owner bypasses this check
-        if ctx.author.name != bot_owner:
-            if user_id is None:
-                await ctx.send("TTS is a Premium feature. Please link your Twitch account on the dashboard to upgrade.")
-                conn.close()
-                return
 
-            # Check user's subscription status
-            c.execute("""
-                SELECT subscription_tier FROM users WHERE user_id = ?
-            """, (user_id,))
-            user_result = c.fetchone()
-
-            if not user_result or user_result[0] != 'premium':
-                await ctx.send("TTS is a Premium feature. Upgrade to Premium ($2/month) at https://your-domain.com/premium to unlock TTS.")
-                conn.close()
-                return
 
         # Determine the new TTS status based on the command
         if new_value.lower() == "on":
@@ -335,7 +318,7 @@ async def ansv_command(self, ctx, setting=None, new_value=None, **kwargs):
         elif new_value.lower() == "off":
             new_tts_status = False
         else:
-            await ctx.send("Invalid command. Use '!ansv tts on' or '!ansv tts off'.")
+            await ctx.send("Invalid command. Use '!mockbot tts on' or '!mockbot tts off'.")
             conn.close()
             return
 
@@ -346,5 +329,41 @@ async def ansv_command(self, ctx, setting=None, new_value=None, **kwargs):
 
         status_text = "enabled" if new_tts_status else "disabled"
         await ctx.send(f"TTS {status_text} for channel {target_channel}.")
+
+    elif setting == "topic":
+        # Check permissions
+        config = configparser.ConfigParser()
+        config.read("settings.conf")
+        bot_owner = config.get("auth", "owner")
+        
+        conn = sqlite3.connect(self.db_file)
+        c = conn.cursor()
+        c.execute("SELECT owner, trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
+        result = c.fetchone()
+        conn.close()
+        
+        if result is None:
+            await ctx.send("Channel not found.")
+            return
+            
+        channel_owner, trusted_users = result
+        trusted_list = trusted_users.split(",") if trusted_users else []
+        
+        if ctx.author.name != bot_owner and ctx.author.name != channel_owner and ctx.author.name not in trusted_list:
+            await ctx.send("Permission denied.")
+            return
+
+        # Set the topic
+        if new_value:
+            if new_value.lower() == "clear" or new_value.lower() == "none":
+                if ctx.channel.name in self.active_topics:
+                    del self.active_topics[ctx.channel.name]
+                await ctx.send(f"Topic cleared for {ctx.channel.name}. Back to random generation.")
+            else:
+                self.active_topics[ctx.channel.name] = new_value
+                await ctx.send(f"Topic set to '{new_value}' for {ctx.channel.name}. I'll try to focus on that.")
+        else:
+            current = self.active_topics.get(ctx.channel.name, "None")
+            await ctx.send(f"Current topic: {current}. Use '!mockbot topic [word]' to set, or 'clear' to reset.")
     # Build the model
     #self.text_model = markovify.Text(self.text)
