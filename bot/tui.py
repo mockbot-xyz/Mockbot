@@ -106,7 +106,37 @@ class MockbotTUI(App):
         logging.getLogger("twitchio").setLevel(logging.INFO)
 
     def compose(self) -> ComposeResult:
-    # ... (unchanged)
+        # Layout: 
+        # Main Area (Chat) + Sidebar (Right)
+        # Bottom (Input)
+        
+        yield Header(show_clock=True)
+        
+        with Container(id="chat-container"):
+            yield RichLog(id="chat_log", markup=True, wrap=True)
+
+        with Container(id="sidebar"):
+            yield Label("Channels", classes="header")
+            yield Label("Loading...", id="channel_list_text")
+            yield Label(" ", classes="spacer")
+            yield Label("System", classes="header")
+            yield Label("Initializing...", id="status_text")
+
+        with Container(id="input-container"):
+            yield Input(placeholder="Send message...", id="message_input")
+            
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "Mockbot"
+        self.sub_title = "Initializing..."
+        self.write_log("[bold blue]System initialized. Starting bot...[/bold blue]")
+        
+        # Start background update loop
+        self.set_interval(1.0, self.update_ui_state)
+        
+        # Start Bot on the MAIN asyncio loop
+        asyncio.create_task(self.run_bot())
 
     def update_ui_state(self):
         """Periodically update UI elements based on bot state."""
@@ -169,7 +199,34 @@ class MockbotTUI(App):
             @self.bot.event
             async def event_ready():
                 self.write_log(f"[bold green]EVENT: Bot is ready! Logged in as {self.bot.nick}[/bold green]")
-                
+
+            # Inject message listener for TUI display
+            @self.bot.event
+            async def event_message(message):
+                # Avoid displaying bot's own messages if desired, but usually we want to see them
+                # echo are messages sent by us
+                try:
+                    if message.echo:
+                        return # We handle rendering our own input locally
+                    
+                    author = message.author.name if message.author else "Unknown"
+                    content = escape(message.content)
+                    
+                    # Timestamps
+                    timestamp = datetime.now().strftime("%H:%M")
+                    
+                    # Formatting
+                    # [14:20] <User> Message
+                    formatted = f"[dim white]{timestamp}[/dim white] [bold cyan]{author}[/bold cyan] {content}"
+                    
+                    # Highlight mentions
+                    if self.bot.nick and self.bot.nick.lower() in content.lower():
+                        formatted = formatted.replace(self.bot.nick, f"[bold yellow]{self.bot.nick}[/bold yellow]")
+                        
+                    self.write_log(formatted)
+                except Exception as e:
+                    self.write_log(f"[red]Error rendering message: {e}[/red]")
+
             self.write_log(f"[bold green]✓ Bot created. Token: ...{self.bot._http.token[-4:]}[/bold green]")
             self.write_log("[dim]Connecting to Twitch...[/dim]")
             
