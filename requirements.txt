@@ -8,6 +8,10 @@ aiofiles>=23.2.0
 python-dotenv>=1.0.0
 numpy>=1.26.0
 
+# CLI Interface
+prompt_toolkit>=3.0.36
+
 # NLTK (also needed for TTS)
 nltk>=3.8.1
 textual>=0.47.1
+aiosqlite>=0.19.0

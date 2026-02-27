@@ -21,8 +21,8 @@ VOICES_DIRECTORY = './voices'
 db_file = 'messages.db'
 
 # Define original stdout and stderr globals
-# original_stdout = sys.stdout
-# original_stderr = sys.stderr
+original_stdout = sys.stdout
+original_stderr = sys.stderr
 
 # Add lock to prevent concurrent TTS processing for Bark model
 bark_tts_lock = threading.Lock() # For process_text_thread
@@ -93,11 +93,12 @@ class TTSModelCache:
                 if device.type == "cuda":
                     # PyTorch 2.0+ uses SDPA automatically, BetterTransformer is legacy/deprecated
                     # and requires 'optimum' which is problematic on bleeding edge versions.
-                    try:
-                        # model.enable_cpu_offload() # Disabled: Causing device mismatch errors
-                        logging.debug(f"TTS: CPU offload disabled for stability.")
-                    except Exception as e:
-                        logging.warning(f"TTS: Could not apply optimizations: {e}")
+                    pass
+                    # try:
+                    #     model.enable_cpu_offload()
+                    #     logging.debug(f"TTS: Enabled CPU offload for {model_path}")
+                    # except Exception as e:
+                    #     logging.warning(f"TTS: Could not apply optimizations: {e}")
                 
                 # Configure tokenizer
                 if processor.tokenizer.pad_token_id is None:
@@ -221,16 +222,29 @@ def log_tts_file(message_id, channel_name, timestamp, file_path, voice_preset, i
 
 def initialize_tts():
     global AutoProcessor, BarkModel, torch, scipy
-    from transformers import AutoProcessor, BarkModel
+    import os
+    import warnings
+    
+    # Suppress verbose Hugging Face logging and warnings for CLI clarity
+    os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+    os.environ["SUNO_USE_SMALL_MODELS"] = "True"
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
+
+    from transformers import AutoProcessor, BarkModel, logging as transformers_logging
+    transformers_logging.set_verbosity_error()
     import torch
     import scipy.io.wavfile
 
 def silence_output():
-    pass # Disabled for TUI compatibility
     # Only silence during model loading/generation to reduce Bark's verbose output
+    # but allow progress bars during initial downloads
+    sys.stdout = open(os.devnull, 'w')
+    sys.stderr = open(os.devnull, 'w')
+
 def process_text_thread(input_text, channel_name, db_file='./messages.db', full_path=None, timestamp=None, message_id=None, voice_preset=None, bark_model=None):
     """Process TTS in a separate thread with silenced output"""
-    global bark_tts_lock
+    global original_stdout, original_stderr, bark_tts_lock
     
     # Log parameters *before* silencing, for critical debugging
     logging.info(f"[TTS THREAD ENTRY] Params: input_text='{str(input_text)[:30]}...', channel='{channel_name}', db_file='{db_file}', full_path='{full_path}', timestamp='{timestamp}', message_id='{message_id}', voice_preset='{voice_preset}', bark_model='{bark_model}'")
@@ -258,8 +272,8 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             from nltk.tokenize import sent_tokenize
         except ImportError as import_err:
             # Restore output for error logging if imports fail
-            # sys.stdout = original_stdout
-            # sys.stderr = original_stderr
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
             logging.error(f"[TTS THREAD FATAL ERROR] Failed to import critical TTS dependencies: {import_err}", exc_info=True)
             # Re-raise the error to be caught by the outer try-except in process_text_thread, which will restore stdout/stderr again
             # and return None, None, preventing further execution in this thread.
@@ -297,8 +311,8 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             cached_model_data = tts_model_cache.get_model(model_path, device)
             if not cached_model_data:
                 # Restore output for error logging if model loading fails
-                # sys.stdout = original_stdout
-                # sys.stderr = original_stderr
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
                 logging.error(f"[TTS THREAD FATAL ERROR] Failed to load or cache model: {model_path}")
                 raise RuntimeError(f"Model loading failed: {model_path}")
             
@@ -310,21 +324,21 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             except AttributeError as ae:
                 if 'get_default_device' in str(ae):
                     # Restore stdout/stderr to ensure this critical message is visible via standard print/logging
-                    # sys.stdout = original_stdout
-                    # sys.stderr = original_stderr
+                    sys.stdout = original_stdout
+                    sys.stderr = original_stderr
                     logging.error(f"[TTS FATAL ERROR] AttributeError: {ae}. This strongly suggests your PyTorch version is too old (e.g., < 1.9) for the installed 'transformers' version.")
                     logging.error("[TTS FATAL ERROR] Please upgrade PyTorch to 1.9+ or align your 'transformers' library version with your PyTorch version.")
                     raise # Re-raise the error to be caught by the outer try-except in process_text_thread
                 else:
                     # Restore stdout/stderr for other AttributeErrors too
-                    # sys.stdout = original_stdout
-                    # sys.stderr = original_stderr
+                    sys.stdout = original_stdout
+                    sys.stderr = original_stderr
                     logging.error(f"[TTS FATAL ERROR] AttributeError during model loading: {ae}")
                     raise # Re-raise other AttributeErrors
             except Exception as model_load_exc:
                 # Restore stdout/stderr for general exceptions during model loading
-                # sys.stdout = original_stdout
-                # sys.stderr = original_stderr
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
                 logging.error(f"[TTS FATAL ERROR] Failed to load or prepare BarkModel: {model_load_exc}", exc_info=True)
                 raise # Re-raise the error
             
@@ -363,8 +377,18 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
                     # Explicitly passing pad_token_id can also help, using the model's config.
                     # Bark's EOS token ID (10000) is often used as pad_token_id for generation.
                     pad_token_id_for_generation = model.generation_config.pad_token_id or model.generation_config.eos_token_id or 10000
-
-                    audio_array = model.generate(**inputs, pad_token_id=pad_token_id_for_generation)
+                    
+                    # Ensure attention_mask is explicitly passed to avoid the warning
+                    attention_mask = inputs.get("attention_mask")
+                    if attention_mask is not None:
+                        audio_array = model.generate(
+                            inputs.input_ids,
+                            attention_mask=attention_mask,
+                            pad_token_id=pad_token_id_for_generation
+                        )
+                    else:
+                        audio_array = model.generate(**inputs, pad_token_id=pad_token_id_for_generation)
+                        
                     audio_array = audio_array.cpu().numpy().squeeze()
                     all_audio_pieces.append(audio_array)
 
@@ -376,8 +400,8 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             db_file_path_relative = full_path.replace('static/', '', 1)
             
             # Restore stdout/stderr temporarily for critical DB logging
-            # sys.stdout = original_stdout
-            # sys.stderr = original_stderr
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
             
             logged_tts_table_id = None # Renamed from logged_tts_id for clarity
             timestamp_for_log = timestamp # Use the passed original message timestamp
@@ -449,8 +473,8 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             
         except Exception as e:
             # Ensure output is restored before printing error from this broad catch-all
-            # sys.stdout = original_stdout
-            # sys.stderr = original_stderr
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
             # This is a fatal error for this thread, so logging.error is appropriate
             logging.error(f"[TTS THREAD FATAL ERROR] Uncaught exception in process_text_thread: {e}", exc_info=True)
             # import traceback # exc_info=True handles this
@@ -458,8 +482,8 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             return None, None # Ensure two values are returned as expected if caller unpacks
         finally:
             # Always restore original stdout and stderr
-            # sys.stdout = original_stdout
-            # sys.stderr = original_stderr
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
             logging.info(f"[TTS THREAD] Released Bark TTS lock for message_id: {message_id}")
 
 @lru_cache(maxsize=20)
@@ -686,21 +710,3 @@ def start_tts_processing(input_text, channel_name, db_file='./messages.db', mess
 def notify_new_audio_available(channel_name, message_id):
     # Webapp removed, notification disabled
     pass
-    # Read webapp port from config
-    # config = configparser.ConfigParser()
-    # config.read('settings.conf')
-    # webapp_port = config.get('webapp', 'port', fallback='8347')
-
-    # Webapp removed, notification disabled
-    pass
-    # Original logic commented out to prevent NameError since 'url' is not defined.
-    # To re-enable, uncomment config loading and url definition.
-    
-    # try:
-    #     response = requests.post(url, json=data)
-    #     if response.status_code == 200:
-    #         logging.debug("Notification sent successfully to webapp for new audio.")
-    #     else:
-    #         logging.warning(f"Failed to send new audio notification to webapp (status: {response.status_code})")
-    # except Exception as e:
-    #     logging.warning(f"Notification error: {e}")

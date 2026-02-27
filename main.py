@@ -20,23 +20,21 @@ enable_tts_global = False
 
 
 def graceful_shutdown(signum, frame):
-    print("\n\n🌀 Received shutdown signal! Cleaning up...")
+    print("\n🌀 Shutting down...")
     
     global bot_instance
 
     # Stop the bot
     if bot_instance:
-        print("🛑 Stopping Twitch bot...")
         if bot_instance.loop and bot_instance.loop.is_running():
             # Schedule the close operation on the bot's event loop
             future = asyncio.run_coroutine_threadsafe(bot_instance.close(), bot_instance.loop)
             try:
                 future.result(timeout=5) # Wait up to 5 seconds for close to complete
-                print("Twitch bot closed.")
             except TimeoutError:
-                print("Twitch bot close timed out.")
+                pass
             except Exception as e:
-                print(f"Error during bot close: {e}")
+                pass
             
             # Stop the bot's event loop
             if bot_instance.loop.is_running():
@@ -47,15 +45,13 @@ def graceful_shutdown(signum, frame):
     if os.path.exists("bot.pid"):
         try:
             os.remove("bot.pid")
-            print("PID file removed.")
-        except OSError as e:
-            print(f"Error removing PID file: {e}")
+        except:
+            pass
             
-    print("✅ Shutdown signal received. Waiting 1s for cleanup...")
-    time.sleep(1)
-    print("Exiting process.")
-    # Force exit to prevent hanging on stuck threads
-    os._exit(0)
+    try:
+        sys.exit(0)
+    except SystemExit:
+        os._exit(0)
 
 
 def main():
@@ -65,7 +61,6 @@ def main():
         parser.add_argument("--rebuild-cache", action="store_true", help="Rebuild markov models")
         parser.add_argument("--tts", action="store_true", help="Enable TTS functionality")
         parser.add_argument("--voice-preset", dest="voice_preset", type=str, help="Set default voice preset for TTS")
-        parser.add_argument("--tui", action="store_true", help="Enable Textual TUI mode")
         args = parser.parse_args()
 
         # print(f"Arguments parsed: {args}")
@@ -76,9 +71,12 @@ def main():
             os.environ["DEFAULT_VOICE_PRESET"] = args.voice_preset
             print(f"Set default voice preset via environment: {args.voice_preset}")
 
-        if not os.path.exists('settings.conf'):
-            print("FATAL: Missing settings.conf file. Please copy settings.example.conf to settings.conf and configure it.")
-            sys.exit(1)
+        from bot.setup_wizard import needs_setup, run_setup_wizard
+        if needs_setup():
+            run_setup_wizard()
+            if needs_setup():
+                print("FATAL: Setup incomplete. Exiting.")
+                sys.exit(1)
 
         if enable_tts_global:
             try:
@@ -122,13 +120,12 @@ def main():
         ensure_db_setup(db_file)
         # print("Database setup complete.")
             
-        # Execution Mode
-        # CLI Mode
-        print("Setting up bot...")
+        # print("Setting up bot...")
+        # Create event loop for TwitchIO
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         bot_instance = setup_bot(db_file, rebuild_cache=args.rebuild_cache, enable_tts=enable_tts_global)
-        print("Bot setup complete.")
+        # print("Bot setup complete.")
         
         # Create PID file
         try:
@@ -137,11 +134,46 @@ def main():
         except IOError:
             pass
 
+        # Execution Mode
+        # Execution Mode
         # Simple CLI mode - direct output
         sys.stdout.flush()
-        bot_instance.run()
+        
+        # Initialize Interactive Shell
+        from bot.interactive import InteractiveShell
+        shell = InteractiveShell(bot_instance)
+        
+        async def run_concurrently():
+            # Create tasks for both the bot and the shell
+            # bot.start() is the coroutine version of bot.run()
+            bot_task = asyncio.create_task(bot_instance.start()) 
+            shell_task = asyncio.create_task(shell.run())
+            
+            # Wait for either to finish (likely shell quit)
+            done, pending = await asyncio.wait(
+                [bot_task, shell_task], 
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # If shell finished (quit), cancel bot
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        
+        # Run the concurrent loop
+        try:
+            loop.run_until_complete(run_concurrently())
+        except KeyboardInterrupt:
+            # Handle Ctrl+C gracefully if it leaks through prompt_toolkit
+            pass
+        finally:
+            # Ensure proper cleanup
+            loop.run_until_complete(bot_instance.close())
+            loop.close()
 
-        print("Bot run loop has exited.")
         
         if enable_tts_global and not torch.cuda.is_available():
              print("WARNING: TTS was enabled without CUDA.")
@@ -156,12 +188,8 @@ def main():
         # graceful_shutdown will be called by the finally block or signal handler
         sys.exit(1) # Ensure exit if main crashes before bot.run()
     finally:
-        # This finally block might not be reached if bot.run() is blocking indefinitely
-        # and is only interrupted by a signal. The signal handler is more reliable for cleanup.
-        print("Main function's finally block reached.")
         # Call graceful_shutdown here if not triggered by a signal (e.g., normal exit from bot.run())
-        # However, if bot.run() is truly blocking, this won't be hit until it stops.
-        # If signals are the primary way to stop, the signal handler is key.
+        pass
 
 
 if __name__ == "__main__":
@@ -170,6 +198,4 @@ if __name__ == "__main__":
     
     # print("Starting Mockbot...")
     main()
-    # If main() completes without sys.exit(), it means bot.run() returned.
-    print("Mockbot main function has completed. Performing final cleanup...")
     graceful_shutdown(None, None) # Ensure cleanup if main() returns normally

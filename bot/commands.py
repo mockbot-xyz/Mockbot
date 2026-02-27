@@ -2,6 +2,8 @@ import configparser
 from datetime import datetime
 
 from twitchio.ext import commands
+import aiosqlite
+import logging
 import sqlite3
 from tabulate import tabulate
 from bot.tts import start_tts_processing
@@ -18,11 +20,11 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         return
 
     # Fetch channel-specific trusted users and owner
-    conn = sqlite3.connect(self.db_file)
-    c = conn.cursor()
-    c.execute("SELECT voice_enabled, owner, trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-    channel_config = c.fetchone()
-    conn.close()
+    conn = await aiosqlite.connect(self.db_file)
+    c = await conn.cursor()
+    await c.execute("SELECT voice_enabled, owner, trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
+    channel_config = await c.fetchone()
+    await conn.close()
 
     if channel_config is None:
         await ctx.send("This channel is not configured.")
@@ -53,11 +55,11 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
                 self.my_logger.log_message(ctx.channel.name, self.nick, response, is_bot_message=True)
 
                 # Trigger TTS processing with database logging (matches web UI behavior)
-                conn = sqlite3.connect(self.db_file)
-                c = conn.cursor()
-                c.execute("SELECT tts_enabled, voice_preset FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-                tts_config = c.fetchone()
-                conn.close()
+                conn = await aiosqlite.connect(self.db_file)
+                c = await conn.cursor()
+                await c.execute("SELECT tts_enabled, voice_preset FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
+                tts_config = await c.fetchone()
+                await conn.close()
 
                 if tts_config and tts_config[0]:
                     voice_preset = tts_config[1] or 'v2/en_speaker_5'
@@ -72,9 +74,9 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
                         timestamp_str=timestamp_str,
                         voice_preset_override=voice_preset
                     )
-                    print(f"TTS processing started for speak command in {ctx.channel.name}")
+                    logging.info(f"TTS processing started for speak command in {ctx.channel.name}")
                 else:
-                    print(f"TTS not enabled for channel {ctx.channel.name}")
+                    logging.info(f"TTS not enabled for channel {ctx.channel.name}")
 
                 # Reset counters to prevent automatic response from triggering immediately after !ansv speak
                 import time
@@ -92,19 +94,19 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         config.read("settings.conf")
         bot_owner = config.get("auth", "owner")
 
-        conn = sqlite3.connect(self.db_file)
-        c = conn.cursor()
+        conn = await aiosqlite.connect(self.db_file)
+        c = await conn.cursor()
 
         # Determine the target channel
         target_channel = new_value if ctx.author.name == bot_owner and new_value else ctx.channel.name
 
         # Retrieve the owner of the target channel from the database
-        c.execute("SELECT owner FROM channel_configs WHERE channel_name = ?", (target_channel,))
-        channel_config = c.fetchone()
+        await c.execute("SELECT owner FROM channel_configs WHERE channel_name = ?", (target_channel,))
+        channel_config = await c.fetchone()
 
         if channel_config is None:
             await ctx.send(f"Channel {target_channel} not found in database.")
-            conn.close()
+            await conn.close()
             return
 
         channel_owner = channel_config[0]
@@ -112,14 +114,14 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         # Check if the user is the bot owner or the channel owner
         if ctx.author.name != bot_owner and ctx.author.name != channel_owner:
             await ctx.send("You do not have permission to use this command for this channel.")
-            conn.close()
+            await conn.close()
             return
 
         # Update the voice_enabled field based on the command
         voice_enabled_status = 1 if setting == "start" else 0
-        c.execute("UPDATE channel_configs SET voice_enabled = ? WHERE channel_name = ?", (voice_enabled_status, target_channel))
-        conn.commit()
-        conn.close()
+        await c.execute("UPDATE channel_configs SET voice_enabled = ? WHERE channel_name = ?", (voice_enabled_status, target_channel))
+        await conn.commit()
+        await conn.close()
 
         action = "enabled" if setting == "start" else "disabled"
         await ctx.send(f"Voice {action} in {target_channel}.")
@@ -137,16 +139,16 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         bot_owner = config.get("auth", "owner")
 
         # Update the database with the new value
-        conn = sqlite3.connect(self.db_file)
-        c = conn.cursor()
+        conn = await aiosqlite.connect(self.db_file)
+        c = await conn.cursor()
 
         # Retrieve the owner and trusted users of the channel from the database
-        c.execute("SELECT owner, trusted_users FROM channel_configs WHERE channel_name = ?", (channel_name,))
-        channel_config = c.fetchone()
+        await c.execute("SELECT owner, trusted_users FROM channel_configs WHERE channel_name = ?", (channel_name,))
+        channel_config = await c.fetchone()
 
         if channel_config is None:
             await ctx.send(f"Channel {channel_name} not found in database.")
-            conn.close()
+            await conn.close()
             return
 
         channel_owner = channel_config[0]
@@ -155,24 +157,24 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         # Check if the user is the bot owner, channel owner, or a trusted user
         if ctx.author.name != bot_owner and ctx.author.name != channel_owner and ctx.author.name not in trusted_users:
             await ctx.send("You do not have permission to use this command in this channel.")
-            conn.close()
+            await conn.close()
             return
 
         # Check if the channel is in the database
-        c.execute("SELECT COUNT(*) FROM channel_configs WHERE channel_name = ?", (channel_name,))
-        if c.fetchone()[0] == 0:
+        await c.execute("SELECT COUNT(*) FROM channel_configs WHERE channel_name = ?", (channel_name,))
+        if (await c.fetchone())[0] == 0:
             await ctx.send(f"Channel {channel_name} not found in database.")
         else:
             if setting == "time":
-                c.execute("UPDATE channel_configs SET time_between_messages = ? WHERE channel_name = ?", (new_value_int, channel_name))
+                await c.execute("UPDATE channel_configs SET time_between_messages = ? WHERE channel_name = ?", (new_value_int, channel_name))
             elif setting == "lines":
-                c.execute("UPDATE channel_configs SET lines_between_messages = ? WHERE channel_name = ?", (new_value_int, channel_name))
+                await c.execute("UPDATE channel_configs SET lines_between_messages = ? WHERE channel_name = ?", (new_value_int, channel_name))
 
-            conn.commit()
+            await conn.commit()
             await ctx.send(f"Set {setting}_between_messages to {new_value_int} for channel {channel_name}.")
             self.my_logger.info(f"{ctx.author.name} set {setting}_between_messages to {new_value_int} for channel {channel_name}.")
 
-        conn.close()
+        await conn.close()
 
     elif setting == "trust":
         # Get the bot owner's name from the configuration file
@@ -181,46 +183,46 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         bot_owner = config.get("auth", "owner")
 
         # Check if the user is the bot owner or the channel owner
-        conn = sqlite3.connect(self.db_file)
-        c = conn.cursor()
-        c.execute("SELECT owner FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-        channel_owner_row = c.fetchone()
+        conn = await aiosqlite.connect(self.db_file)
+        c = await conn.cursor()
+        await c.execute("SELECT owner FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
+        channel_owner_row = await c.fetchone()
         channel_owner = channel_owner_row[0] if channel_owner_row else None
 
         if ctx.author.name != bot_owner and ctx.author.name != channel_owner:
             await ctx.send("You do not have permission to use this command.")
-            conn.close()
+            await conn.close()
             return
 
         # Update the trusted_users field for the specific channel in the database
-        c.execute("SELECT trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-        result = c.fetchone()
+        await c.execute("SELECT trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
+        result = await c.fetchone()
         existing_trusted_users = result[0].split(",") if result and result[0] else []
         if new_value not in existing_trusted_users:
             updated_trusted_users = existing_trusted_users + [new_value]
-            c.execute("UPDATE channel_configs SET trusted_users = ? WHERE channel_name = ?", (",".join(updated_trusted_users), ctx.channel.name))
-            conn.commit()
+            await c.execute("UPDATE channel_configs SET trusted_users = ? WHERE channel_name = ?", (",".join(updated_trusted_users), ctx.channel.name))
+            await conn.commit()
             await ctx.send(f"User {new_value} is now trusted in {ctx.channel.name}.")
         else:
             await ctx.send(f"User {new_value} is already trusted in {ctx.channel.name}.")
 
-        conn.close()
+        await conn.close()
 
     elif setting == "join":
         if ctx.author.name != self.owner:
             await ctx.send("Unauthorized attempt to use join command.")
             return
 
-        with sqlite3.connect(self.db_file) as conn:
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM channel_configs WHERE channel_name = ?", (new_value,))
-            if c.fetchone()[0] == 0:
+        async with aiosqlite.connect(self.db_file) as conn:
+            c = await conn.cursor()
+            await c.execute("SELECT COUNT(*) FROM channel_configs WHERE channel_name = ?", (new_value,))
+            if (await c.fetchone())[0] == 0:
                 try:
                     await self.join_channels([new_value])
                     self.channels.append(new_value)
                     # Corrected line below
-                    c.execute("INSERT OR REPLACE INTO channel_configs (channel_name, voice_enabled, tts_enabled, join_channel, owner, trusted_users) VALUES (?, 0, 0, 1, ?, '')", (new_value, new_value))
-                    conn.commit()
+                    await c.execute("INSERT OR REPLACE INTO channel_configs (channel_name, voice_enabled, tts_enabled, join_channel, owner, trusted_users) VALUES (?, 0, 0, 1, ?, '')", (new_value, new_value))
+                    await conn.commit()
                     await ctx.send(f"Joined {new_value} and added to channels.")
                 except Exception as e:
                     await ctx.send(f"Failed to join {new_value}: {str(e)}")
@@ -232,15 +234,15 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
             await ctx.send("You do not have permission to use this command.")
             return
 
-        with sqlite3.connect(self.db_file) as conn:
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM channel_configs WHERE channel_name = ?", (new_value,))
-            if c.fetchone()[0] > 0 and new_value in self.channels:
+        async with aiosqlite.connect(self.db_file) as conn:
+            c = await conn.cursor()
+            await c.execute("SELECT COUNT(*) FROM channel_configs WHERE channel_name = ?", (new_value,))
+            if (await c.fetchone())[0] > 0 and new_value in self.channels:
                 try:
                     await self.part_channels([new_value])
                     self.channels.remove(new_value)
-                    c.execute("UPDATE channel_configs SET join_channel = 0 WHERE channel_name = ?", (new_value,))
-                    conn.commit()
+                    await c.execute("UPDATE channel_configs SET join_channel = 0 WHERE channel_name = ?", (new_value,))
+                    await conn.commit()
                     await ctx.send(f"Left channel: {new_value}")
                 except Exception as e:
                     await ctx.send(f"Failed to leave channel: {new_value}. Error: {str(e)}")
@@ -254,10 +256,10 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         bot_owner = config.get("auth", "owner")
 
         # Fetch the channel's owner and trusted users
-        conn = sqlite3.connect(self.db_file)
-        c = conn.cursor()
-        c.execute("SELECT owner, trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-        result = c.fetchone()
+        conn = await aiosqlite.connect(self.db_file)
+        c = await conn.cursor()
+        await c.execute("SELECT owner, trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
+        result = await c.fetchone()
 
         if result is None:
             await ctx.send("Channel not found in database.")
@@ -272,12 +274,12 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
             return
 
         # Validate and update the voice preset
-        c.execute("SELECT COUNT(*) FROM voice_options WHERE voice_code = ?", (new_value,))
-        if c.fetchone()[0] == 0:
+        await c.execute("SELECT COUNT(*) FROM voice_options WHERE voice_code = ?", (new_value,))
+        if (await c.fetchone())[0] == 0:
             await ctx.send("Invalid voice preset.")
         else:
-            c.execute("UPDATE channel_configs SET voice_preset = ? WHERE channel_name = ?", (new_value, ctx.channel.name))
-            conn.commit()
+            await c.execute("UPDATE channel_configs SET voice_preset = ? WHERE channel_name = ?", (new_value, ctx.channel.name))
+            await conn.commit()
             await ctx.send(f"Voice preset updated to {new_value} for channel {ctx.channel.name}.")
 
     elif setting == "tts":
@@ -286,19 +288,19 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         config.read("settings.conf")
         bot_owner = config.get("auth", "owner")
 
-        conn = sqlite3.connect(self.db_file)
-        c = conn.cursor()
+        conn = await aiosqlite.connect(self.db_file)
+        c = await conn.cursor()
 
         # Determine the target channel
         target_channel = ctx.channel.name
 
         # Retrieve the owner and user_id of the target channel from the database
-        c.execute("SELECT owner, user_id FROM channel_configs WHERE channel_name = ?", (target_channel,))
-        channel_config = c.fetchone()
+        await c.execute("SELECT owner, user_id FROM channel_configs WHERE channel_name = ?", (target_channel,))
+        channel_config = await c.fetchone()
 
         if channel_config is None:
             await ctx.send(f"Channel {target_channel} not found in database.")
-            conn.close()
+            await conn.close()
             return
 
         channel_owner = channel_config[0]
@@ -307,7 +309,7 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         # Check if the user is the bot owner or the channel owner
         if ctx.author.name != bot_owner and ctx.author.name != channel_owner:
             await ctx.send("You do not have permission to change TTS settings for this channel.")
-            conn.close()
+            await conn.close()
             return
 
 
@@ -319,13 +321,13 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
             new_tts_status = False
         else:
             await ctx.send("Invalid command. Use '!mockbot tts on' or '!mockbot tts off'.")
-            conn.close()
+            await conn.close()
             return
 
         # Update the TTS status in the database
-        c.execute("UPDATE channel_configs SET tts_enabled = ? WHERE channel_name = ?", (new_tts_status, target_channel))
-        conn.commit()
-        conn.close()
+        await c.execute("UPDATE channel_configs SET tts_enabled = ? WHERE channel_name = ?", (new_tts_status, target_channel))
+        await conn.commit()
+        await conn.close()
 
         status_text = "enabled" if new_tts_status else "disabled"
         await ctx.send(f"TTS {status_text} for channel {target_channel}.")

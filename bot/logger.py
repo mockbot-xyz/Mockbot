@@ -138,16 +138,6 @@ class Logger:
         # Print the rich, colorized message directly to the console
         print(console_log_msg)
 
-        # Log to channel-specific corpus file ONLY if it's a user message (not from bot)
-        # This prevents bot responses from contaminating the training corpus and causing feedback loops
-        if not message_content.startswith('!') and not is_bot_message:
-            log_file_path = f"logs/{channel}.txt"
-            try:
-                with open(log_file_path, "a", encoding='utf-8') as file:
-                    file.write(message_content + "\n")
-            except Exception as e:
-                # Log this failure to the main app.log via the logger
-                self.logger.error(f"Failed to write to channel log {log_file_path}: {str(e)}")
 
         # Prepare a sanitized, uncolored message for app.log
         # The FileHandler will add its own timestamp, level, etc.
