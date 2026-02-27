@@ -6,6 +6,9 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.completion import WordCompleter, NestedCompleter
 from prompt_toolkit.styles import Style
 from colorama import Fore, Style as CStyle
+import uuid
+from datetime import datetime
+from bot.tts import start_tts_processing
 
 class InteractiveShell:
     def __init__(self, bot):
@@ -123,10 +126,27 @@ class InteractiveShell:
                 print("Usage: say <message>")
                 return
             message = " ".join(args)
-            channel = self.bot.get_channel(self.current_context.lstrip('#'))
+            channel_name = self.current_context.lstrip('#')
+            channel = self.bot.get_channel(channel_name)
             if channel:
                 await channel.send(message)
                 print(f"Sent to {self.current_context}: {message}")
+                
+                # Check if TTS is enabled and trigger it
+                if self.bot.enable_tts and self.bot.is_tts_enabled(channel_name):
+                    voice_preset = self.bot.get_channel_voice_preset(channel_name)
+                    msg_id = f"cli_{uuid.uuid4().hex[:8]}"
+                    timestamp_str = datetime.now().isoformat()
+                    
+                    start_tts_processing(
+                        input_text=message,
+                        channel_name=channel_name,
+                        message_id=msg_id,
+                        timestamp_str=timestamp_str,
+                        voice_preset_override=voice_preset,
+                        db_file=self.bot.db_file
+                    )
+                    print(f"🎙️ TTS Request dispatched for manual 'say' command.")
             else:
                 print(f"Error: Not connected to {self.current_context}")
 
@@ -187,15 +207,21 @@ class InteractiveShell:
                 state = 1 if val_str in ['on', 'true'] else 0
                 await self._update_setting('log_dice', state)
             elif key == 'voice':
-                if not val_str:
+                if not args or len(args) < 2:
                     print("Usage: set voice <model_name>")
                     return
                 # We will store the original string (case-sensitive if needed) as val_str is already lowered above.
                 # Let's use the actual passed argument for voice preset to preserve case:
                 actual_val = args[1]
                 await self._update_setting('voice_preset', actual_val)
+            elif key == 'delay':
+                if val_str not in ['on', 'off', 'true', 'false']:
+                    print("Usage: set delay <on|off>")
+                    return
+                state = 1 if val_str in ['on', 'true'] else 0
+                await self._update_setting('tts_delay_enabled', state)
             else:
-                print(f"Unknown setting: {key}. Available: lines, time, chance, model, log_dice, voice.")
+                print(f"Unknown setting: {key}. Available: lines, time, chance, model, log_dice, voice, delay.")
 
         elif cmd == 'help':
             print("""
@@ -206,7 +232,7 @@ Available Commands:
   say <message>     Send chat (in channel context)
   tts <on|off>      Toggle TTS for current context
   model <gen|indiv> Toggle Markov model type (general/individual)
-  set <key> <val>   Set config (keys: lines, time, chance, model, log_dice, voice)
+  set <key> <val>   Set config (keys: lines, time, chance, model, log_dice, voice, delay)
   brain, stats      Show number of lines loaded per channel
   quit, q           Exit bot
             """)
