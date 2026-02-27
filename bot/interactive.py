@@ -223,6 +223,51 @@ class InteractiveShell:
             else:
                 print(f"Unknown setting: {key}. Available: lines, time, chance, model, log_dice, voice, delay.")
 
+        elif cmd in ['trust', 'untrust', 'ignore', 'unignore']:
+            if self.current_context == "Global":
+                print(f"Error: Cannot use '{cmd}' in Global context. Use 'use #channel' first.")
+                return
+            if not args:
+                print(f"Usage: {cmd} <username>")
+                return
+                
+            username = args[0].lower()
+            column = 'trusted_users' if cmd in ['trust', 'untrust'] else 'ignored_users'
+            is_add = cmd in ['trust', 'ignore']
+            clean_name = self.current_context.lstrip('#')
+            
+            db_file = self.bot.db_file
+            try:
+                async with aiosqlite.connect(db_file) as conn:
+                    c = await conn.cursor()
+                    await c.execute(f"SELECT {column} FROM channel_configs WHERE channel_name = ?", (clean_name,))
+                    row = await c.fetchone()
+                    if row is None:
+                        print(f"Error: Channel {clean_name} not found in database.")
+                        return
+                    
+                    user_list = [u.strip() for u in (row[0] or "").split(',') if u.strip()]
+                    
+                    if is_add:
+                        if username not in user_list:
+                            user_list.append(username)
+                            print(f"✅ Added {username} to {column} for {self.current_context}.")
+                        else:
+                            print(f"ℹ️ User {username} is already in {column} for {self.current_context}.")
+                    else:
+                        if username in user_list:
+                            user_list.remove(username)
+                            print(f"✅ Removed {username} from {column} for {self.current_context}.")
+                        else:
+                            print(f"ℹ️ User {username} is not in {column} for {self.current_context}.")
+                            
+                    new_val = ",".join(user_list)
+                    await c.execute(f"UPDATE channel_configs SET {column} = ? WHERE channel_name = ?", (new_val, clean_name))
+                    await conn.commit()
+                self.bot.load_channel_settings()
+            except Exception as e:
+                print(f"Database Error: {e}")
+
         elif cmd == 'help':
             print("""
 Available Commands:
@@ -231,6 +276,10 @@ Available Commands:
   join <#channel>   Join a channel
   say <message>     Send chat (in channel context)
   tts <on|off>      Toggle TTS for current context
+  trust <user>      Add user to trusted users (allows command usage)
+  untrust <user>    Remove user from trusted users
+  ignore <user>     Add user to ignored lists (prevents brain learning)
+  unignore <user>   Remove user from ignored lists
   model <gen|indiv> Toggle Markov model type (general/individual)
   set <key> <val>   Set config (keys: lines, time, chance, model, log_dice, voice, delay)
   brain, stats      Show number of lines loaded per channel
