@@ -141,9 +141,14 @@ def main():
         
         # Initialize Interactive Shell
         from bot.interactive import InteractiveShell
+        from bot.overlay import start_server
         shell = InteractiveShell(bot_instance)
         
         async def run_concurrently():
+            # Start the OBS overlay web server
+            # start_server returns an AppRunner but doesn't block
+            await start_server(port=5050)
+            
             # Create tasks for both the bot and the shell
             # bot.start() is the coroutine version of bot.run()
             bot_task = asyncio.create_task(bot_instance.start()) 
@@ -158,21 +163,13 @@ def main():
             # If shell finished (quit), cancel bot
             for task in pending:
                 task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
         
         # Run the concurrent loop
-        try:
-            loop.run_until_complete(run_concurrently())
-        except KeyboardInterrupt:
-            # Handle Ctrl+C gracefully if it leaks through prompt_toolkit
-            pass
-        finally:
-            # Ensure proper cleanup
-            loop.run_until_complete(bot_instance.close())
-            loop.close()
+        loop.run_until_complete(run_concurrently())
+        
+        # Ensure proper cleanup after run_concurrently finishes
+        loop.run_until_complete(bot_instance.close())
+        loop.close()
 
         
         if enable_tts_global and not torch.cuda.is_available():
