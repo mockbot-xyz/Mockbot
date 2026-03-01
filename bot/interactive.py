@@ -25,6 +25,7 @@ class InteractiveShell:
             'say': None,
             'voice': {'on': None, 'off': None},
             'tts': {'on': None, 'off': None},
+            'timer': {'add': None, 'del': None, 'msg': None, 'list': None},
             'help': None,
             'quit': None,
             'exit': None
@@ -57,6 +58,10 @@ class InteractiveShell:
             # Stop the loop
             asyncio.get_event_loop().stop()
             return
+
+        elif cmd == 'clear':
+            # Clear console screen based on OS
+            os.system('cls' if os.name == 'nt' else 'clear')
 
         elif cmd == 'status':
             if self.current_context == "Global":
@@ -375,6 +380,99 @@ class InteractiveShell:
                     await conn.commit()
             except Exception as e:
                 print(f"Error: {e}")
+
+        elif cmd == 'timer':
+            if len(args) < 1:
+                print("Usage: timer <add|del|msg|list> ...")
+                return
+                
+            subcmd = args[0].lower()
+            target_chan = 'global' if self.current_context == 'Global' else self.current_context.lstrip('#')
+            
+            try:
+                import sqlite3
+                import aiosqlite
+                async with aiosqlite.connect(self.bot.db_file) as conn:
+                    c = await conn.cursor()
+                    
+                    if subcmd == 'add':
+                        if len(args) < 3:
+                            print("Usage: timer add <pool_name> <interval_minutes>")
+                            return
+                        pool_name = args[1].lower()
+                        try:
+                            interval = int(args[2])
+                        except ValueError:
+                            print("Error: Interval must be a number of minutes.")
+                            return
+                            
+                        try:
+                            await c.execute(
+                                "INSERT INTO timed_message_pools (channel_name, pool_name, interval_minutes) VALUES (?, ?, ?)",
+                                (target_chan, pool_name, interval)
+                            )
+                            await conn.commit()
+                            print(f"✅ Created timer pool '{pool_name}' for {target_chan} (Interval: {interval}m).")
+                        except sqlite3.IntegrityError:
+                            print(f"❌ Timer pool '{pool_name}' already exists in {target_chan}.")
+                            
+                    elif subcmd == 'del':
+                        if len(args) < 2:
+                            print("Usage: timer del <pool_name>")
+                            return
+                        pool_name = args[1].lower()
+                        await c.execute(
+                            "DELETE FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?",
+                            (target_chan, pool_name)
+                        )
+                        if c.rowcount > 0:
+                            await conn.commit()
+                            print(f"✅ Deleted timer pool '{pool_name}' from {target_chan}.")
+                        else:
+                            print(f"❌ Timer pool '{pool_name}' not found in {target_chan}.")
+                            
+                    elif subcmd == 'msg':
+                        if len(args) < 3:
+                            print("Usage: timer msg <pool_name> <message...>")
+                            return
+                        pool_name = args[1].lower()
+                        message_text = " ".join(args[2:])
+                        
+                        # Verify pool exists
+                        await c.execute("SELECT 1 FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?", (target_chan, pool_name))
+                        if not await c.fetchone():
+                            print(f"❌ Timer pool '{pool_name}' not found in {target_chan}. Create it first with 'timer add'.")
+                            return
+                            
+                        await c.execute(
+                            "INSERT INTO timed_messages (pool_name, channel_name, message_text) VALUES (?, ?, ?)",
+                            (pool_name, target_chan, message_text)
+                        )
+                        await conn.commit()
+                        print(f"✅ Added message to timer pool '{pool_name}' in {target_chan}.")
+                        
+                    elif subcmd == 'list':
+                        await c.execute(
+                            "SELECT pool_name, interval_minutes FROM timed_message_pools WHERE channel_name = ?",
+                            (target_chan,)
+                        )
+                        pools = await c.fetchall()
+                        
+                        if not pools:
+                            print(f"No timer pools found for {target_chan}.")
+                            return
+                            
+                        print(f"--- Timer Pools for {target_chan} ---")
+                        for p_name, p_int in pools:
+                            await c.execute("SELECT COUNT(*) FROM timed_messages WHERE channel_name = ? AND pool_name = ?", (target_chan, p_name))
+                            msg_count = (await c.fetchone())[0]
+                            print(f" • {p_name} - Interval: {p_int}m | Messages: {msg_count}")
+                    else:
+                        print(f"Unknown timer subcommand: {subcmd}. Use add, del, msg, or list.")
+                        
+            except Exception as e:
+                print(f"Timer Error: {e}")
+
         elif cmd == 'poll':
             if self.current_context == "Global":
                 print("Cannot create a poll globally. Please 'use <channel>' first.")
@@ -455,6 +553,7 @@ Available Commands:
   unignore <user>   Remove user from ignored lists
   model <gen|indiv> Toggle Markov model type (general/individual)
   set <key> <val>   Set config (keys: lines, time, chance, model, log_dice, voice, delay, bits, points)
+  timer <cmd> <arg> Manage timed messages (add, del, msg, list)
   poll <args>       Create a poll (e.g. poll 5 Yes/No? | Yes | No)
   addc <cmd> <resp> Add custom command (use <sender> <streamer> <input>)
   editc <cmd> <rsp> Edit custom command

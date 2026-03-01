@@ -641,3 +641,105 @@ async def mockbot_poll(self, ctx, *args):
         await ctx.send(f"Poll started: {question} ({duration_minutes_str}m)!")
     except Exception as e:
         await ctx.send(f"Failed to create poll: {e}")
+
+async def mockbot_timer(self, ctx, *args):
+    """Manage timed messages: !mockbot timer <add|del|msg|list> ..."""
+    if not await _check_custom_auth(self, ctx):
+        await ctx.send("You don't have permission to manage timers.")
+        return
+
+    if not args:
+        await ctx.send("Usage: !mockbot timer <add|del|msg|list> ...")
+        return
+
+    subcmd = args[0].lower()
+    channel_name = ctx.channel.name
+
+    try:
+        import sqlite3
+        import aiosqlite
+        async with aiosqlite.connect(self.db_file) as conn:
+            c = await conn.cursor()
+
+            if subcmd == 'add':
+                if len(args) < 3:
+                    await ctx.send("Usage: !mockbot timer add <pool_name> <interval_minutes>")
+                    return
+                pool_name = args[1].lower()
+                try:
+                    interval = int(args[2])
+                except ValueError:
+                    await ctx.send("Error: Interval must be a number of minutes.")
+                    return
+
+                try:
+                    await c.execute(
+                        "INSERT INTO timed_message_pools (channel_name, pool_name, interval_minutes) VALUES (?, ?, ?)",
+                        (channel_name, pool_name, interval)
+                    )
+                    await conn.commit()
+                    await ctx.send(f"Created timer pool '{pool_name}' (Interval: {interval}m).")
+                except sqlite3.IntegrityError:
+                    await ctx.send(f"Error: Timer pool '{pool_name}' already exists.")
+
+            elif subcmd == 'del':
+                if len(args) < 2:
+                    await ctx.send("Usage: !mockbot timer del <pool_name>")
+                    return
+                pool_name = args[1].lower()
+                await c.execute(
+                    "DELETE FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?",
+                    (channel_name, pool_name)
+                )
+                if c.rowcount > 0:
+                    await conn.commit()
+                    await ctx.send(f"Deleted timer pool '{pool_name}'.")
+                else:
+                    await ctx.send(f"Error: Timer pool '{pool_name}' not found.")
+
+            elif subcmd == 'msg':
+                if len(args) < 3:
+                    await ctx.send("Usage: !mockbot timer msg <pool_name> <message...>")
+                    return
+                pool_name = args[1].lower()
+                message_text = " ".join(args[2:])
+
+                # Verify pool exists
+                await c.execute(
+                    "SELECT 1 FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?", 
+                    (channel_name, pool_name)
+                )
+                if not await c.fetchone():
+                    await ctx.send(f"Error: Timer pool '{pool_name}' not found. Create it first with 'timer add'.")
+                    return
+
+                await c.execute(
+                    "INSERT INTO timed_messages (pool_name, channel_name, message_text) VALUES (?, ?, ?)",
+                    (pool_name, channel_name, message_text)
+                )
+                await conn.commit()
+                await ctx.send(f"Added message to timer pool '{pool_name}'.")
+
+            elif subcmd == 'list':
+                await c.execute(
+                    "SELECT pool_name, interval_minutes FROM timed_message_pools WHERE channel_name = ?",
+                    (channel_name,)
+                )
+                pools = await c.fetchall()
+
+                if not pools:
+                    await ctx.send(f"No timer pools found for #{channel_name}.")
+                    return
+
+                output_parts = []
+                for p_name, p_int in pools:
+                    await c.execute("SELECT COUNT(*) FROM timed_messages WHERE channel_name = ? AND pool_name = ?", (channel_name, p_name))
+                    msg_count = (await c.fetchone())[0]
+                    output_parts.append(f"{p_name} ({p_int}m, {msg_count} msgs)")
+                
+                await ctx.send(f"Timer Pools: " + " | ".join(output_parts))
+            else:
+                await ctx.send(f"Unknown timer subcommand: {subcmd}. Use add, del, msg, or list.")
+
+    except Exception as e:
+        await ctx.send(f"Timer Error: {e}")

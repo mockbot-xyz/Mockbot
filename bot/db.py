@@ -174,6 +174,26 @@ def ensure_db_setup(db_file):
                         PRIMARY KEY(channel_name, rule_name)
                     )''')
         conn.commit()
+        
+        # Create 'timed_message_pools' table for Timed Messages feature
+        c.execute('''CREATE TABLE IF NOT EXISTS timed_message_pools (
+                        channel_name TEXT,
+                        pool_name TEXT,
+                        interval_minutes INTEGER NOT NULL,
+                        last_sent_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY(channel_name, pool_name)
+                    )''')
+        conn.commit()
+
+        # Create 'timed_messages' table for Timed Messages feature
+        c.execute('''CREATE TABLE IF NOT EXISTS timed_messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        pool_name TEXT NOT NULL,
+                        channel_name TEXT NOT NULL,
+                        message_text TEXT NOT NULL,
+                        FOREIGN KEY(channel_name, pool_name) REFERENCES timed_message_pools(channel_name, pool_name) ON DELETE CASCADE
+                    )''')
+        conn.commit()
 
         # Check and migrate tts_logs table if needed
         c.execute("PRAGMA table_info(tts_logs)")
@@ -274,7 +294,10 @@ def ensure_db_setup(db_file):
             "CREATE INDEX IF NOT EXISTS idx_bot_status_timestamp ON bot_status(timestamp)",
             
             # User colors indexes
-            "CREATE INDEX IF NOT EXISTS idx_user_colors_username ON user_colors(username)"
+            "CREATE INDEX IF NOT EXISTS idx_user_colors_username ON user_colors(username)",
+            
+            # Timed Messages indexes
+            "CREATE INDEX IF NOT EXISTS idx_timed_message_pools_last_sent ON timed_message_pools(last_sent_time)"
         ]
         
         for index_sql in performance_indexes:

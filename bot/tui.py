@@ -250,6 +250,9 @@ class MockbotDashboard(App):
                 await self.bot.close()
             self.exit()
             
+        elif cmd == 'clear':
+            self.action_clear_log()
+            
         elif cmd == 'status':
             if self.bot:
                 if self.current_context == "Global":
@@ -649,6 +652,106 @@ class MockbotDashboard(App):
             except Exception as e:
                 self.write_log(f"[bold red]Error:[/bold red] {e}")
 
+        elif cmd == 'timer':
+            if len(args) < 1:
+                self.write_log("Usage: timer <add|del|msg|list> ...")
+                return
+                
+            subcmd = args[0].lower()
+            target_chan = 'global' if self.current_context == 'Global' else self.current_context.lstrip('#')
+            
+            try:
+                import sqlite3
+                import aiosqlite
+                async with aiosqlite.connect(self.bot.db_file) as conn:
+                    c = await conn.cursor()
+                    
+                    if subcmd == 'add':
+                        if len(args) < 3:
+                            self.write_log("Usage: timer add <pool_name> <interval_minutes>")
+                            return
+                        pool_name = args[1].lower()
+                        try:
+                            interval = int(args[2])
+                        except ValueError:
+                            self.write_log("[bold red]Error:[/bold red] Interval must be a number of minutes.")
+                            return
+                            
+                        try:
+                            await c.execute(
+                                "INSERT INTO timed_message_pools (channel_name, pool_name, interval_minutes) VALUES (?, ?, ?)",
+                                (target_chan, pool_name, interval)
+                            )
+                            await conn.commit()
+                            self.write_log(f"[bold green]Created timer pool[/bold green] '{pool_name}' for {target_chan} (Interval: {interval}m).")
+                        except sqlite3.IntegrityError:
+                            self.write_log(f"[bold red]Error:[/bold red] Timer pool '{pool_name}' already exists in {target_chan}.")
+                            
+                    elif subcmd == 'del':
+                        if len(args) < 2:
+                            self.write_log("Usage: timer del <pool_name>")
+                            return
+                        pool_name = args[1].lower()
+                        await c.execute(
+                            "DELETE FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?",
+                            (target_chan, pool_name)
+                        )
+                        if c.rowcount > 0:
+                            await conn.commit()
+                            self.write_log(f"[bold green]Deleted timer pool[/bold green] '{pool_name}' from {target_chan}.")
+                        else:
+                            self.write_log(f"[bold red]Error:[/bold red] Timer pool '{pool_name}' not found in {target_chan}.")
+                            
+                    elif subcmd == 'msg':
+                        if len(args) < 3:
+                            self.write_log("Usage: timer msg <pool_name> <message...>")
+                            return
+                        pool_name = args[1].lower()
+                        message_text = " ".join(args[2:])
+                        
+                        # Verify pool exists
+                        await c.execute("SELECT 1 FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?", (target_chan, pool_name))
+                        if not await c.fetchone():
+                            self.write_log(f"[bold red]Error:[/bold red] Timer pool '{pool_name}' not found in {target_chan}. Create it first with 'timer add'.")
+                            return
+                            
+                        await c.execute(
+                            "INSERT INTO timed_messages (pool_name, channel_name, message_text) VALUES (?, ?, ?)",
+                            (pool_name, target_chan, message_text)
+                        )
+                        await conn.commit()
+                        self.write_log(f"[bold green]Added message[/bold green] to timer pool '{pool_name}' in {target_chan}.")
+                        
+                    elif subcmd == 'list':
+                        await c.execute(
+                            "SELECT pool_name, interval_minutes FROM timed_message_pools WHERE channel_name = ?",
+                            (target_chan,)
+                        )
+                        pools = await c.fetchall()
+                        
+                        if not pools:
+                            self.write_log(f"No timer pools found for {target_chan}.")
+                            return
+                            
+                        from rich.table import Table
+                        from rich import box
+                        table = Table(title=f"Timer Pools ({target_chan})", box=box.ROUNDED)
+                        table.add_column("Pool Name", style="cyan")
+                        table.add_column("Interval (m)", justify="right")
+                        table.add_column("Messages", justify="right")
+                        
+                        for p_name, p_int in pools:
+                            await c.execute("SELECT COUNT(*) FROM timed_messages WHERE channel_name = ? AND pool_name = ?", (target_chan, p_name))
+                            msg_count = (await c.fetchone())[0]
+                            table.add_row(p_name, str(p_int), str(msg_count))
+                            
+                        self.write_log(table)
+                    else:
+                        self.write_log(f"Unknown timer subcommand: {subcmd}. Use add, del, msg, or list.")
+                        
+            except Exception as e:
+                self.write_log(f"[bold red]Timer Error:[/bold red] {e}")
+
         elif cmd == 'grammar':
             if len(args) < 2:
                 self.write_log("Usage: grammar <add|list|clear> <rule> [text]")
@@ -692,15 +795,25 @@ class MockbotDashboard(App):
                 self.write_log("Bot instance not connected.")
                 return
             
-            self.write_log("[bold yellow]Compiling all brain caches... This may take a moment.[/bold yellow]")
+            context = self.current_context
+            if context == "Global":
+                self.write_log("[bold yellow]Compiling General Markov Model and all active channels...[/bold yellow]")
+            else:
+                self.write_log(f"[bold yellow]Compiling brain cache tailored for {context}...[/bold yellow]")
+
             import threading
             def _compile():
                 try:
                     original_rebuild = self.bot.rebuild_cache
                     self.bot.rebuild_cache = True
-                    self.bot.load_text_and_build_model(create_individual_caches=True)
+                    target = "Global" if context == "Global" else context.lstrip('#')
+                    self.bot.load_text_and_build_model(create_individual_caches=True, target_channel=target)
                     self.bot.rebuild_cache = original_rebuild
-                    self.write_log("[bold green]Brain caches compiled successfully![/bold green]")
+                    
+                    if context == "Global":
+                        self.write_log("[bold green]General Model & Channel caches compiled successfully![/bold green]")
+                    else:
+                        self.write_log(f"[bold green]Brain cache for {context} compiled successfully![/bold green]")
                 except Exception as e:
                     self.write_log(f"[bold red]Error compiling caches:[/bold red] {e}")
             threading.Thread(target=_compile).start()
@@ -731,6 +844,7 @@ class MockbotDashboard(App):
                 ("[green]ignore <user>[/]", "Ignore user (global context = all channels)"),
                 ("[green]unignore <user>[/]", "Unignore user (global context = all channels)"),
                 ("[green]ignorelist[/]", "Show ignored users per channel"),
+                ("[green]timer <add|del|msg|list>[/]", "Manage scheduled message pools for this channel"),
                 ("[green]model <gen|indivi>[/]", "Toggle Markov model type (general/individual)"),
                 ("[green]set <key> <val>[/]", "Set config (keys: lines, time, chance, model, log_dice, voice, delay, bits...)"),
                 ("[green]poll <args>[/]", "Create a poll (e.g. poll 5 Yes/No? | Yes | No)"),

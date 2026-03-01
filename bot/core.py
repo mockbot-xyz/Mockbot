@@ -780,6 +780,17 @@ class Bot(commands.Bot):
                 
                 total_lines = 0
                 
+                # Pre-fetch general model stats
+                gen_cache_size_str = "N/A"
+                gen_last_compiled_str = "None"
+                gen_cache_file_path = os.path.join("cache", "general_markov_model.json")
+                if os.path.exists(gen_cache_file_path):
+                    size_bytes = os.path.getsize(gen_cache_file_path)
+                    gen_cache_size_str = f"{size_bytes / 1024:.1f} KB"
+                    mtime = os.path.getmtime(gen_cache_file_path)
+                    dt = datetime.datetime.fromtimestamp(mtime)
+                    gen_last_compiled_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+
                 for row in await c.fetchall():
                     channel, count = row
                     if channel:
@@ -788,10 +799,12 @@ class Bot(commands.Bot):
                         use_general = channel_models.get(clean_channel, 1) # Default to 1 (general) if not found
                         model_type = "General" if use_general else "Individual"
                         
-                        cache_size_str = "N/A"
-                        last_compiled_str = "None"
-                        
-                        if not use_general:
+                        if use_general:
+                            cache_size_str = gen_cache_size_str
+                            last_compiled_str = gen_last_compiled_str
+                        else:
+                            cache_size_str = "N/A"
+                            last_compiled_str = "None"
                             cache_file_path = os.path.join("cache", f"{clean_channel}_model.json")
                             if os.path.exists(cache_file_path):
                                 size_bytes = os.path.getsize(cache_file_path)
@@ -837,22 +850,18 @@ class Bot(commands.Bot):
                     table.add_row(*row)
                 self.my_logger.print_message(table)
                 
-                # Check for cached general model
-                cache_file_path = os.path.join("cache", "general_markov_model.json")
-                if os.path.exists(cache_file_path):
-                    size_bytes = os.path.getsize(cache_file_path)
-                    cache_size_str = f"{size_bytes / 1024:.1f} KB"
-                    mtime = os.path.getmtime(cache_file_path)
-                    dt = datetime.datetime.fromtimestamp(mtime)
-                    self.my_logger.print_message(f"\nGeneral Model Cache Size: {cache_size_str}")
-                    self.my_logger.print_message(f"General Model Last Compiled: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # Check for cached general model (standalone print below the table)
+                if gen_cache_size_str != "N/A":
+                    self.my_logger.print_message(f"\nGeneral Model Cache Size: {gen_cache_size_str}")
+                    self.my_logger.print_message(f"General Model Last Compiled: {gen_last_compiled_str}")
                 else:
                     self.my_logger.print_message("\nGeneral Model Cache: Not generated yet")
                     
         except Exception as e:
             self.my_logger.print_message(f"Error printing brain status: {e}")
 
-    def load_text_and_build_model(self, create_individual_caches=False):
+    def load_text_and_build_model(self, create_individual_caches=False, target_channel=None):
         cache_directory = "cache/"
         if not os.path.exists(cache_directory):
             os.makedirs(cache_directory)
@@ -912,11 +921,15 @@ class Bot(commands.Bot):
             total_lines += line_count
             self.text += file_text
 
-            if channel_name in valid_channels and line_count >= line_threshold and create_individual_caches:
+            cache_status = f"{RED}Unchanged{RESET}"
+            
+            should_compile_individual = create_individual_caches and channel_name in valid_channels and line_count >= line_threshold
+            if target_channel and target_channel != "Global" and channel_name != target_channel.lstrip('#'):
+                should_compile_individual = False
+                
+            if should_compile_individual:
                 cache_file_path = os.path.join(cache_directory, f"{channel_name}_model.json")
                 cache_status = self.create_channel_model(channel_name, file_text, cache_file_path)
-            else:
-                cache_status = f"{RED}Unchanged{RESET}"
 
             files_data.append([
                 channel_name, 
@@ -925,20 +938,23 @@ class Bot(commands.Bot):
                 "General Model" if cache_status == f"{RED}Unchanged{RESET}" else f"{channel_name}_model.json"
             ])
 
-        # After processing all files, build the general model
         if self.text:
             self.general_model = markovify.Text(self.text)
+            
+            should_compile_general = True
+            if target_channel and target_channel != "Global":
+                should_compile_general = False
+                
             general_cache_file_path = os.path.join(cache_directory, "general_markov_model.json")
             last_build_time = self.cache_build_times.get("general_markov_model.json")
+            general_cache_status = f"{RED}Unchanged{RESET}"
             
-            if self.rebuild_cache or last_build_time is None:
+            if should_compile_general and (self.rebuild_cache or last_build_time is None):
                 self.save_general_model_to_cache(general_cache_file_path)
                 general_cache_status = f"{GREEN}Updated{RESET}"
                 # Update build time
                 self.cache_build_times["general_markov_model.json"] = time.time()
                 self.save_cache_build_times()
-            else:
-                general_cache_status = f"{RED}Unchanged{RESET}"
 
         conn.close()
 
@@ -1208,7 +1224,7 @@ class Bot(commands.Bot):
 
         # Show settings help
         if setting == "settings":
-            await ctx.send("Usage: !mockbot [setting] [value]. Available settings: trusted, voice, tts, lines, time")
+            await ctx.send("Usage: !mockbot [setting] [value]. Available settings: trusted, voice, tts, lines, time, timer, addc, editc, delc, grammar, poll")
             return
 
         if setting == "trusted":
@@ -1274,6 +1290,11 @@ class Bot(commands.Bot):
         elif setting == "poll":
             from bot.commands import mockbot_poll
             await mockbot_poll(self, ctx, *args)
+            
+        elif setting == "timer":
+            from bot.commands import mockbot_timer
+            await mockbot_timer(self, ctx, *args)
+            
         else:
             # Call the original mockbot_command for other settings
             await mockbot_command(self, ctx, setting, args[0] if args else None, enable_tts=self.enable_tts)
@@ -1529,15 +1550,16 @@ class Bot(commands.Bot):
         except Exception as e:
             print(f"{RED}❌ Error setting up heartbeat: {e}{RESET}")
             
-        # Step 9: Start background DB writer
+        # Step 9: Start background DB writer & Timed Message Loop
         try:
             if verbose:
-                print(f"{YELLOW}Step 9: Starting background DB writer...{RESET}")
+                print(f"{YELLOW}Step 9: Starting background DB writer and Timed Message Loop...{RESET}")
             self.db_flush_task = self.loop.create_task(self.background_db_writer())
+            self.timed_msg_task = self.loop.create_task(self.timed_message_loop())
             if verbose:
-                print(f"{GREEN}✅ Background DB writer started{RESET}")
+                print(f"{GREEN}✅ Background loops started{RESET}")
         except Exception as e:
-            print(f"{RED}❌ Error starting background DB writer: {e}{RESET}")
+            print(f"{RED}❌ Error starting background loops: {e}{RESET}")
             
         # Step 10: Setup PubSub
         try:
@@ -1625,6 +1647,91 @@ class Bot(commands.Bot):
 
         # Mark connection as successful for reconnection manager
         self.connection_manager.mark_connected()
+
+    async def timed_message_loop(self):
+        """Background asynchronous task that periodically evaluates and sends Timed Messages."""
+        self.logger.info("Timed message loop started.")
+        while True:
+            try:
+                await asyncio.sleep(60.0)  # Check every 60 seconds
+                
+                try:
+                    import aiosqlite
+                    import random
+                    async with aiosqlite.connect(self.db_file) as conn:
+                        c = await conn.cursor()
+                        
+                        # Find pools where the interval has elapsed since last_sent_time
+                        # and verify the bot is currently in the channel
+                        await c.execute("""
+                            SELECT pool_name, channel_name 
+                            FROM timed_message_pools 
+                            WHERE (julianday(CURRENT_TIMESTAMP) - julianday(last_sent_time)) * 1440 >= interval_minutes
+                        """)
+                        ready_pools = await c.fetchall()
+                        
+                        for pool_name, channel_name in ready_pools:
+                            # Verify bot is in channel
+                            if f"#{channel_name}" not in self._joined_channels:
+                                continue
+                                
+                            # Retrieve all messages for this pool
+                            await c.execute(
+                                "SELECT message_text FROM timed_messages WHERE pool_name = ? AND channel_name = ?",
+                                (pool_name, channel_name)
+                            )
+                            messages = await c.fetchall()
+                            
+                            if messages:
+                                # Pick a random message from the pool
+                                msg_text = random.choice(messages)[0]
+                                
+                                # Process Tracery if it contains '#'
+                                if '#' in msg_text:
+                                    import tracery
+                                    from tracery.modifiers import base_english
+                                    
+                                    # Fetch grammar rules for this channel + global rules
+                                    await c.execute(
+                                        "SELECT rule_name, options_json FROM custom_grammar WHERE channel_name = ? OR channel_name = 'global'",
+                                        (channel_name,)
+                                    )
+                                    grammar_rows = await c.fetchall()
+                                    
+                                    rules = {}
+                                    import json
+                                    for rule_name, options_json in grammar_rows:
+                                        try:
+                                            rules[rule_name] = json.loads(options_json)
+                                        except:
+                                            pass
+                                            
+                                    rules["origin"] = [msg_text]
+                                    rules["streamer"] = [channel_name]
+                                    grammar = tracery.Grammar(rules)
+                                    grammar.add_modifiers(base_english)
+                                    msg_text = grammar.flatten("#origin#")
+
+                                # Send the timed message
+                                channel_obj = self.get_channel(channel_name)
+                                if channel_obj and msg_text:
+                                    await channel_obj.send(msg_text)
+                                    self.my_logger.log_message(channel_name, self.nick, msg_text, is_bot_message=True)
+                                    
+                                    # Update the last_sent_time so the interval resets
+                                    await c.execute(
+                                        "UPDATE timed_message_pools SET last_sent_time = CURRENT_TIMESTAMP WHERE pool_name = ? AND channel_name = ?",
+                                        (pool_name, channel_name)
+                                    )
+                                    await conn.commit()
+                except Exception as loop_db_error:
+                    self.logger.error(f"Database error in timed messages loop: {loop_db_error}")
+
+            except asyncio.CancelledError:
+                self.logger.info("Timed message loop cancelled.")
+                break
+            except Exception as e:
+                self.logger.error(f"Unexpected error in timed message loop: {e}")
 
     async def flush_db_queue(self):
         """Force flush remaining messages in the queue to the database."""
@@ -1947,13 +2054,15 @@ class Bot(commands.Bot):
             return
 
         # --- CUSTOM COMMANDS & GRAMMAR (Funtoon Style) ---
-        if message.content.startswith('!'):
-            command_parts = message.content.split(maxsplit=1)
+        # Any message's first word could technically be a custom command trigger, no "!" required.
+        command_parts = message.content.split(maxsplit=1)
+        if command_parts:
             cmd_name = command_parts[0].lower()
             cmd_input = command_parts[1] if len(command_parts) > 1 else ""
             
             # Check db for custom command, prioritizing channel-specific, then global
             try:
+                import aiosqlite
                 async with aiosqlite.connect(self.db_file) as conn:
                     c = await conn.cursor()
                     await c.execute(
