@@ -1,21 +1,28 @@
 # Core Features & Settings
 
-Mockbot operates primarily through Twitch Chat commands using the prefix `!mockbot`. Channel operators and trusted users can configure how the bot behaves natively from the chat.
+Mockbot operates primarily through Twitch Chat commands using the prefix `!mockbot`. Don't worry, you don't need to be a programmer to configure it! If you are a channel operator (like a Mod) or have been added as a "Trusted User", you can type these directly into chat to change how the bot behaves on the fly.
 
 ## Standard Commands
 
-| Command | Description |
+These are the commands you'll use most often to control how chatty Mockbot is.
+
+| Type This in Chat | What Does It Do? |
 |---|---|
-| `!mockbot speak` | Forces the bot to instantly generate a Markov-chain response based on the channel's learned vocabulary. If TTS is enabled, it reads it out loud. |
-| `!mockbot start` / `!mockbot stop` | Enables or disables the bot's ability to speak automatically in the channel based on message and time thresholds. |
-| `!mockbot lines <number>` | Sets the required number of chat messages from users before the bot will automatically generate and send a response. |
-| `!mockbot time <seconds>` | Sets the mandatory cooldown period (in seconds) between the bot's automatic chat responses. |
-| `!mockbot trust <username>` | Adds a specific user to the channel's "Trusted Users" list, granting them permission to configure the bot, manage timers, and create custom commands. |
-| `!mockbot join <#channel>` / `!mockbot part <#channel>` | *(Global Bot Owner Only)* Instructs the bot to enter or leave a specific Twitch channel. |
+| `!mockbot speak` | **Make the bot talk immediately.** It will look at what your chat has been talking about recently, generate a fresh sentence, and send it. If TTS is on, it will also read it out loud! |
+| `!mockbot start` or `!mockbot stop` | **Turn the automatic talking on or off.** When started, the bot will jump in and talk by itself after a certain amount of time or chat messages pass. |
+| `!mockbot lines 20` | **Set how many real chatter messages need to go by** before Mockbot decides it's time to speak again. (In this example, it waits for 20 messages). |
+| `!mockbot time 300` | **Set the cooldown timer.** This forces the bot to wait *at least* this many seconds (e.g. 300 seconds = 5 minutes) before talking automatically again. |
+| `!mockbot trust Firestarman` | **Give someone permission to control the bot.** The user `Firestarman` can now use all of these `!mockbot` commands, as well as create timers and custom commands. |
+| `!mockbot join #mychannel` | *(Bot Host Only)* Tells the background program to connect the bot to a new Twitch channel. |
 
-## PubSub Integrations
+!!! tip "Finding the Sweet Spot"
+    If your chat is moving really fast, you might want to increase `!mockbot lines` so the bot doesn't spam too frequently! If your chat is slower, keeping the lines low but the `time` higher works great.
 
-Mockbot can listen to native Twitch events (using your User Auth Token) and respond automatically.
+## PubSub Integrations (Bits & Points)
 
-*   **`!mockbot bits <on/off>`**: Enables or disables the bot's reaction to Bits/Cheers.
-*   **`!mockbot points <on/off>`**: Enables or disables the bot's reaction to Channel Point redemptions.
+"PubSub" is just a fancy term for Twitch's live event system. Mockbot can "listen" for when someone Cheers bits or redeems a Channel Point reward, and automatically generate a chat message reaction!
+
+*   **Type `!mockbot bits on`**: The bot will now react automatically when someone cheers!
+*   **Type `!mockbot points on`**: The bot will now react automatically when someone redeems Channel Points!
+
+*(You can turn these off at any time by typing `!mockbot bits off`)*

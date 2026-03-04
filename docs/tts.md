@@ -1,18 +1,22 @@
 # Text-to-Speech (TTS)
 
-Mockbot uses the high-quality **Bark AI** model for Text-to-Speech generation. TTS is routed through a web overlay designed as an OBS Browser Source, so it doesn't try to play directly through your Python terminal.
+Mockbot uses the high-quality **Bark AI** model to read out the sentences it generates! 
+
+Because reading TTS audio directly through an invisible Python terminal is clunky, Mockbot uses a "Web Overlay" instead. This works exactly like setting up Streamlabs or StreamElements alerts.
 
 ## Core Commands
 
-*   **`!mockbot tts <on/off>`**
+*   `!mockbot tts on` / `!mockbot tts off`
     *   Turn Text-to-Speech entirely on or off for your channel. When enabled, all generated Markov messages will be spoken.
-*   **`!mockbot voice_preset <preset_name>`**
-    *   Change the voice the bot uses. Available Bark presets usually follow the format `v2/en_speaker_1`, `v2/en_speaker_9`, etc.
+*   `!mockbot set voice <preset_name>`
+    *   Change the voice the bot uses. Available Bark presets look like this: `v2/en_speaker_1`, `v2/en_speaker_9`, etc.
 
-## The Web Overlay
+## Putting the Bot on Stream
 
-To hear the bot and display real-time channel variables, you must add the OBS overlay to your streaming software.
+To hear the bot and display real-time channel variables, you just need to add the OBS overlay to your streaming software.
 
-*   **URL:** `http://localhost:5050/overlay/<your_channel_name>`
-*   **Dimensions:** Default `800x600` is fine, but it is responsive.
-*   **Permissions:** You must check "Control Audio via OBS" if you wish to adjust the TTS volume inside your mixer instead of Desktop Audio.
+1. Open **OBS Studio**.
+2. Add a new **Browser Source**.
+3. Set the **URL** to: `http://localhost:5050/overlay/<your_channel_name>` (Replace `<your_channel_name>` with your actual Twitch name, e.g., `http://localhost:5050/overlay/firestarman`).
+4. Set the **Width/Height** to `800x600`.
+5. Check **"Control Audio via OBS"** if you want to be able to turn the bot up or down from your audio mixer!

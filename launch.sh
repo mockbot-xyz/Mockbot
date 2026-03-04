@@ -56,6 +56,7 @@ show_help() {
     echo "  status            Check if running"
     echo "  cli [tts]         Start interactive CLI (add 'tts' to enable voice)"
     echo "  logs [lines]      View logs"
+    echo "  docs              Serve the MkDocs wiki locally"
     echo "  setup-tts         Install TTS dependencies"
     echo "  clean             Remove temporary files"
     echo ""
@@ -176,6 +177,22 @@ cmd_setup_tts() {
     fi
 }
 
+cmd_docs() {
+    echo -e "${CYAN}Starting MkDocs Local Server...${NC}"
+    if [[ ! -d "$VENV_DIR" ]]; then
+        echo -e "${RED}Error: Virtual environment not found. Run './launch.sh start' first to set it up.${NC}"
+        exit 1
+    fi
+    source "$VENV_DIR/bin/activate"
+    if ! command -v mkdocs &> /dev/null; then
+        echo -e "${YELLOW}MkDocs not found. Installing...${NC}"
+        pip install mkdocs mkdocs-material
+    fi
+    echo -e "${GREEN}✓ Serving documentation at http://127.0.0.1:8000${NC}"
+    echo -e "${YELLOW}Press Ctrl+C to stop the server.${NC}"
+    mkdocs serve
+}
+
 cmd_clean() {
     echo -e "${YELLOW}Cleaning temp files...${NC}"
     rm -f *.log *.pid bot_heartbeat.json
@@ -191,6 +208,7 @@ case "${1:-}" in
     status) cmd_status ;;
     cli) cmd_cli "${@:2}" ;; # Pass remaining args
     logs) cmd_logs "${2:-50}" ;;
+    docs) cmd_docs ;;
     setup-tts) cmd_setup_tts ;;
     clean) cmd_clean ;;
     *) show_help ;;
