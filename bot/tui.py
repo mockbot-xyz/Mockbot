@@ -330,14 +330,14 @@ class MockbotDashboard(App):
 
         if msg_obj.get("is_bot"):
             user_text = Text(f"<{msg_obj['username']}>", style="bold magenta")
-            msg_text = Text(msg_obj['message'], style="magenta italic")
+            msg_text = Text.from_markup(msg_obj['message'], style="magenta italic")
         else:
             if isinstance(user_color, str) and user_color.isdigit():
                 user_style = f"bold color({user_color})"
             else:
                 user_style = f"bold {user_color}" if user_color else "bold"
             user_text = Text(f"<{msg_obj['username']}>", style=user_style)
-            msg_text = Text(msg_obj['message'], style="italic")
+            msg_text = Text.from_markup(msg_obj['message'], style="italic")
             
         if msg_obj.get("not_logged"):
             msg_text.append(f" {msg_obj['not_logged']}", style="dim red")

@@ -141,17 +141,16 @@ class Logger:
         # Just the Time
         time_only = timestamp_dt.strftime('%H:%M:%S')
 
-        # Always display the message, but mark bad-word messages with an indicator
         if has_badword:
-            db_tag = "[BLOCKED]"
+            db_tag = "[BLK]"
             not_logged_tag = " [dim red]🚫 not logged[/]"
             not_logged_tag_ansi = f" {RED}🚫 not logged{RESET}"
         elif is_bot_message:
-            db_tag = ""
+            db_tag = "[BOT]"
             not_logged_tag = ""
             not_logged_tag_ansi = ""
         else:
-            db_tag = ""
+            db_tag = "[LOG]"
             not_logged_tag = ""
             not_logged_tag_ansi = ""
 
