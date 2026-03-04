@@ -2935,7 +2935,7 @@ def fetch_users(db_file):
                 trusted_users = row[0].split(",") if row[0] else []
                 ignored_users = row[1].split(",") if row[1] else []
         except Exception as e:
-            self.logger.info(f"Error fetching users for channel {channel_name}: {e}")
+            print(f"Error fetching users for channel {channel_name}: {e}")
         finally:
             conn.close()
         return trusted_users, ignored_users
@@ -2952,7 +2952,7 @@ def fetch_initial_channels(db_file):
         for row in c.fetchall():
             channels.append(row[0])
     except Exception as e:
-        self.logger.info(f"Error fetching initial channels: {e}")
+        print(f"Error fetching initial channels: {e}")
     finally:
         conn.close()
     return channels
@@ -2991,18 +2991,18 @@ def setup_bot(db_file, rebuild_cache=False, enable_tts=False):
     # Get channels to join from database
     channels_str_list = fetch_initial_channels(db_file)
     if not channels_str_list:
-        self.logger.info("⚠️ No auto-join channels found in database.")
+        print("⚠️ No auto-join channels found in database.")
         channels_str = ""
     else:
         channels_str = ",".join(channels_str_list)
     
-    self.logger.info(f"Found channels string: {channels_str}")
+    print(f"Found channels string: {channels_str}")
     
     # Strip whitespace and ensure channels start with #
     channels = [f"#{ch.strip()}" if not ch.strip().startswith('#') else ch.strip() 
                 for ch in channels_str.split(',')]
     
-    self.logger.info(f"Bot will join these channels: {channels}")
+    print(f"Bot will join these channels: {channels}")
     
     # Initialize bot instance
     bot = Bot(
