@@ -505,7 +505,7 @@ class MockbotDashboard(App):
                 self._cmd_log("[bold red]Error:[/bold red] Cannot 'say' in Global context. Use 'use #channel' first.")
                 return
             if not args:
-                self._cmd_log("Usage: say <message>")
+                self._cmd_log("Usage: [bold yellow]say <message>[/bold yellow]")
                 return
             message = " ".join(args)
             channel_name = self.current_context.lstrip('#')
@@ -570,28 +570,28 @@ class MockbotDashboard(App):
                 
         elif cmd == 'tts':
             if not args or args[0].lower() not in ['on', 'off']:
-                self._cmd_log("Usage: tts <on|off>")
+                self._cmd_log("Usage: [bold yellow]tts <on|off>[/bold yellow]")
                 return
             state = 1 if args[0].lower() == 'on' else 0
             await self._update_setting('tts_enabled', state)
 
         elif cmd == 'voice':
             if not args or args[0].lower() not in ['on', 'off']:
-                self._cmd_log("Usage: voice <on|off>")
+                self._cmd_log("Usage: [bold yellow]voice <on|off>[/bold yellow]")
                 return
             state = 1 if args[0].lower() == 'on' else 0
             await self._update_setting('voice_enabled', state)
 
         elif cmd == 'model':
             if not args or args[0].lower() not in ['general', 'individual']:
-                self._cmd_log("Usage: model <general|individual>")
+                self._cmd_log("Usage: [bold yellow]model <general|individual>[/bold yellow]")
                 return
             state = 1 if args[0].lower() == 'general' else 0
             await self._update_setting('use_general_model', state)
             
         elif cmd == 'set':
             if len(args) < 2:
-                self._cmd_log("Usage: set <lines|time|model|voice|bits|points> <val>")
+                self._cmd_log("Usage: [bold yellow]set <lines|time|model|voice|bits|points> <val>[/bold yellow]")
                 return
             key = args[0].lower()
             val_str = args[1].lower()
@@ -606,7 +606,7 @@ class MockbotDashboard(App):
                 await self._update_setting('time_between_messages', val)
             elif key == 'model':
                 if val_str not in ['general', 'individual']:
-                    self._cmd_log("Usage: set model <general|individual>")
+                    self._cmd_log("Usage: [bold yellow]set model <general|individual>[/bold yellow]")
                     return
                 state = 1 if val_str == 'general' else 0
                 await self._update_setting('use_general_model', state)
@@ -620,25 +620,25 @@ class MockbotDashboard(App):
                 await self._update_setting('random_chance', val)
             elif key == 'log_dice':
                 if val_str not in ['on', 'off', 'true', 'false']:
-                    self._cmd_log("Usage: set log_dice <on|off>")
+                    self._cmd_log("Usage: [bold yellow]set log_dice <on|off>[/bold yellow]")
                     return
                 state = 1 if val_str in ['on', 'true'] else 0
                 await self._update_setting('log_dice', state)
             elif key == 'voice':
                 if not args or len(args) < 2:
-                    self._cmd_log("Usage: set voice <model_name>")
+                    self._cmd_log("Usage: [bold yellow]set voice <model_name>[/bold yellow]")
                     return
                 actual_val = args[1]
                 await self._update_setting('voice_preset', actual_val)
             elif key == 'delay':
                 if val_str not in ['on', 'off', 'true', 'false']:
-                    self._cmd_log("Usage: set delay <on|off>")
+                    self._cmd_log("Usage: [bold yellow]set delay <on|off>[/bold yellow]")
                     return
                 state = 1 if val_str in ['on', 'true'] else 0
                 await self._update_setting('tts_delay_enabled', state)
             elif key in ['bits', 'points']:
                 if val_str not in ['on', 'off']:
-                    self._cmd_log(f"Usage: set {key} <on|off>")
+                    self._cmd_log(f"Usage: [bold yellow]set {key} <on|off>[/bold yellow]")
                     return
                 state = 1 if val_str == 'on' else 0
                 await self._update_setting(f'pubsub_{key}', state)
@@ -647,7 +647,7 @@ class MockbotDashboard(App):
 
         elif cmd in ['trust', 'untrust', 'ignore', 'unignore']:
             if not args:
-                self._cmd_log(f"Usage: {cmd} <username>")
+                self._cmd_log(f"Usage: [bold yellow]{cmd} <username>[/bold yellow]")
                 return
                 
             username = args[0].lower()
