@@ -1,6 +1,7 @@
 import logging
 import json
 import asyncio
+import aiosqlite
 from aiohttp import web
 from pathlib import Path
 
@@ -151,7 +152,7 @@ async def serve_overlay(request):
             }}
 
             /* Transcript Area */
-            .transcript-area {{
+            .transcript-area {
                 background: #0f172a;
                 border-radius: 8px;
                 padding: 12px;
@@ -159,7 +160,35 @@ async def serve_overlay(request):
                 color: #cbd5e1;
                 min-height: 40px;
                 border: 1px solid #334155;
-            }}
+            }
+
+            /* Variables Area */
+            .variables-area {
+                background: #0f172a;
+                border-radius: 8px;
+                padding: 12px;
+                font-size: 0.95rem;
+                color: #f8fafc;
+                border: 1px solid #334155;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                min-height: 20px;
+            }
+            .var-badge {
+                background: #334155;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-weight: 600;
+                font-size: 0.85rem;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+            }
+            .var-name {
+                color: #94a3b8;
+                margin-right: 6px;
+                text-transform: uppercase;
+                font-size: 0.75rem;
+            }
         </style>
     </head>
     <body>
@@ -190,6 +219,10 @@ async def serve_overlay(request):
             <div class="transcript-area" id="transcriptArea">
                 Waiting for messages...
             </div>
+
+            <div class="variables-area" id="variablesArea" style="display: none;">
+                <!-- Variables injected here via API -->
+            </div>
         </div>
 
         <audio id="ttsAudioPlayer" style="display: none;"></audio>
@@ -202,8 +235,38 @@ async def serve_overlay(request):
             const ttsToggle = document.getElementById('ttsToggle');
             const visualizer = document.getElementById('visualizer');
             const transcriptArea = document.getElementById('transcriptArea');
+            const variablesArea = document.getElementById('variablesArea');
             
             let typingInterval = null;
+
+            async function fetchVariables() {{
+                try {{
+                    const response = await fetch(`/api/variables/{channel}`);
+                    if (!response.ok) return;
+                    
+                    const data = await response.json();
+                    const keys = Object.keys(data);
+                    
+                    if (keys.length === 0) {{
+                        variablesArea.style.display = 'none';
+                        return;
+                    }}
+                    
+                    let html = '';
+                    for (const key of keys) {{
+                        html += `<div class="var-badge"><span class="var-name">${{key}}</span>${{data[key]}}</div>`;
+                    }}
+                    
+                    variablesArea.innerHTML = html;
+                    variablesArea.style.display = 'flex';
+                }} catch (e) {{
+                    // Fail silently to avoid spamming console
+                }}
+            }}
+
+            // Refresh variables every 5 seconds
+            setInterval(fetchVariables, 5000);
+            fetchVariables();
 
             player.onplay = () => {{
                 visualizer.classList.add('playing');
@@ -349,6 +412,28 @@ def broadcast_audio(channel: str, file_path: str, message: str = ""):
     elif main_loop is None:
         logging.warning("Cannot broadcast_audio: main_loop is not active.")
 
+async def api_get_variables(request):
+    """Serve the active channel variables from the database as JSON."""
+    channel = request.match_info.get('channel', '').lower()
+    if not channel:
+        return web.json_response({"error": "Missing channel parameter"}, status=400)
+        
+    variables = {}
+    try:
+        # The default DB file used by the bot is bot_database.db
+        # To be safe, try to connect to the current directory's DB
+        async with aiosqlite.connect("bot_database.db") as conn:
+            c = await conn.cursor()
+            await c.execute("SELECT var_name, var_value FROM channel_variables WHERE channel_name = ?", (channel,))
+            rows = await c.fetchall()
+            for name, val in rows:
+                variables[name] = val
+    except Exception as e:
+        logging.error(f"Error fetching variables for overlay API: {e}")
+        return web.json_response({"error": "Database error"}, status=500)
+        
+    return web.json_response(variables)
+
 async def start_server(host='0.0.0.0', port=5050):
     """Start the aiohttp web server."""
     global main_loop
@@ -359,6 +444,7 @@ async def start_server(host='0.0.0.0', port=5050):
     # Routes
     app.router.add_get('/overlay/{channel}', serve_overlay)
     app.router.add_get('/ws/{channel}', websocket_handler)
+    app.router.add_get('/api/variables/{channel}', api_get_variables)
     
     # Mount static files directly. 
     # Mockbot TTS outputs save to static/outputs/<channel>/<file>.wav

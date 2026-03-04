@@ -2185,6 +2185,51 @@ class Bot(commands.Bot):
                         
                         generated_response = grammar.flatten(formatted_template)
                         
+                        # --- VARIABLE MACROS INTERCEPTOR ---
+                        import re
+                        
+                        # Find all var_add tags: {var_add:name:value}
+                        for var_name, change_val in re.findall(r'\{var_add:(.+?):(-?\d+)\}', generated_response):
+                            try:
+                                await c.execute(
+                                    "INSERT INTO channel_variables (channel_name, var_name, var_value) VALUES (?, ?, ?) "
+                                    "ON CONFLICT(channel_name, var_name) DO UPDATE SET var_value = var_value + ?",
+                                    (channel_name, var_name, int(change_val), int(change_val))
+                                )
+                                await conn.commit()
+                            except Exception as e:
+                                self.logger.error(f"Error processing var_add for {var_name}: {e}")
+                                
+                        # Find all var_set tags: {var_set:name:value}
+                        for var_name, new_val in re.findall(r'\{var_set:(.+?):(-?\d+)\}', generated_response):
+                            try:
+                                await c.execute(
+                                    "INSERT INTO channel_variables (channel_name, var_name, var_value) VALUES (?, ?, ?) "
+                                    "ON CONFLICT(channel_name, var_name) DO UPDATE SET var_value = ?",
+                                    (channel_name, var_name, int(new_val), int(new_val))
+                                )
+                                await conn.commit()
+                            except Exception as e:
+                                self.logger.error(f"Error processing var_set for {var_name}: {e}")
+
+                        # Clean the action tags from the output so they don't print in chat
+                        generated_response = re.sub(r'\{var_add:.+?:-?\d+\}', '', generated_response)
+                        generated_response = re.sub(r'\{var_set:.+?:-?\d+\}', '', generated_response)
+
+                        # Process <{var:X}> syntax to read variables AFTER updates run
+                        # E.g. Deaths: <{var:deaths}>
+                        for var_name in set(re.findall(r'<\{var:(.+?)\}>', generated_response)):
+                            await c.execute(
+                                "SELECT var_value FROM channel_variables WHERE channel_name = ? AND var_name = ?",
+                                (channel_name, var_name)
+                            )
+                            row = await c.fetchone()
+                            val = row[0] if row else 0
+                            generated_response = generated_response.replace(f'{{var:{var_name}}}', str(val))
+                            # We need to ensure we replace the `<{...}>` completely because tracery regex or something might interfere
+                            # It's cleaner to handle both <{...}> and just raw {var:...} if needed
+                            generated_response = generated_response.replace(f'<{{var:{var_name}}}>', str(val))
+                        
                         # --- MODERATION ACTION INTERCEPTOR ---
                         import re
                         timeout_match = re.search(r'\{timeout:(.+?):(\d+)\}', generated_response)

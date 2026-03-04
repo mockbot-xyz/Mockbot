@@ -174,6 +174,15 @@ def ensure_db_setup(db_file):
                         PRIMARY KEY(channel_name, rule_name)
                     )''')
         conn.commit()
+
+        # Create 'channel_variables' table for persistent counters
+        c.execute('''CREATE TABLE IF NOT EXISTS channel_variables (
+                        channel_name TEXT,
+                        var_name TEXT,
+                        var_value INTEGER DEFAULT 0,
+                        PRIMARY KEY(channel_name, var_name)
+                    )''')
+        conn.commit()
         
         # Create 'timed_message_pools' table for Timed Messages feature
         c.execute('''CREATE TABLE IF NOT EXISTS timed_message_pools (
