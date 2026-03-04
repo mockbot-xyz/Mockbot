@@ -143,8 +143,8 @@ class Logger:
 
         if has_badword:
             db_tag = "[BLK]"
-            not_logged_tag = " [dim red]🚫 not logged[/]"
-            not_logged_tag_ansi = f" {RED}🚫 not logged{RESET}"
+            not_logged_tag = ""
+            not_logged_tag_ansi = ""
         elif is_bot_message:
             db_tag = "[BOT]"
             not_logged_tag = ""

@@ -80,7 +80,8 @@ def ensure_db_setup(db_file):
                         random_chance REAL DEFAULT 0.0,
                         log_dice BOOLEAN DEFAULT 0,
                         pubsub_bits BOOLEAN DEFAULT 0,
-                        pubsub_points BOOLEAN DEFAULT 0
+                        pubsub_points BOOLEAN DEFAULT 0,
+                        tts_reward TEXT DEFAULT ''
                     )''')
 
         # Add random_chance column to channel_configs if it doesn't exist (migration)
@@ -103,6 +104,11 @@ def ensure_db_setup(db_file):
         if 'pubsub_points' not in channel_configs_columns:
             c.execute("ALTER TABLE channel_configs ADD COLUMN pubsub_points BOOLEAN DEFAULT 0")
             logging.info("Column 'pubsub_points' added to 'channel_configs'.")
+            
+        # Add tts_reward column to channel_configs if it doesn't exist (migration)
+        if 'tts_reward' not in channel_configs_columns:
+            c.execute("ALTER TABLE channel_configs ADD COLUMN tts_reward TEXT DEFAULT ''")
+            logging.info("Column 'tts_reward' added to 'channel_configs'.")
             
         conn.commit()
 

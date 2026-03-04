@@ -416,6 +416,48 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         status_text = "enabled" if new_points_status else "disabled"
         await ctx.send(f"Points tracking {status_text} for channel {target_channel}.")
 
+    elif setting == "tts_reward":
+        if not new_value:
+            await ctx.send("Please provide the exact name of the Twitch Channel Point reward. Example: !mockbot tts_reward TTS Voice")
+            return
+
+        config = configparser.ConfigParser()
+        config.read("settings.conf")
+        bot_owner = config.get("auth", "owner")
+
+        conn = await aiosqlite.connect(self.db_file)
+        c = await conn.cursor()
+
+        target_channel = ctx.channel.name
+
+        await c.execute("SELECT owner FROM channel_configs WHERE channel_name = ?", (target_channel,))
+        channel_config = await c.fetchone()
+
+        if channel_config is None:
+            await ctx.send(f"Channel {target_channel} not found in database.")
+            await conn.close()
+            return
+
+        channel_owner = channel_config[0]
+
+        if ctx.author.name != bot_owner and ctx.author.name != channel_owner:
+            await ctx.send("You do not have permission to change the TTS reward command for this channel.")
+            await conn.close()
+            return
+
+        if new_value.lower() == "none" or new_value.lower() == "off":
+            reward_val = ""
+        else:
+            reward_val = new_value
+
+        await c.execute("UPDATE channel_configs SET tts_reward = ? WHERE channel_name = ?", (reward_val, target_channel))
+        await conn.commit()
+        await conn.close()
+
+        if reward_val:
+            await ctx.send(f"TTS Channel Point reward set to '{reward_val}' for channel {target_channel}.")
+        else:
+            await ctx.send(f"TTS Channel Point reward disabled for channel {target_channel}.")
 
 
 async def _check_custom_auth(self, ctx):

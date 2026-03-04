@@ -439,8 +439,8 @@ class Bot(commands.Bot):
                             await c.execute('''
                                 INSERT INTO channel_configs 
                                 (channel_name, tts_enabled, voice_enabled, join_channel, owner, 
-                                trusted_users, ignored_users, use_general_model, lines_between_messages, time_between_messages, currently_connected, tts_delay_enabled)
-                                VALUES (?, 0, 1, 1, ?, '', '', 1, 50, 15, 1, 0)
+                                trusted_users, ignored_users, use_general_model, lines_between_messages, time_between_messages, currently_connected, tts_delay_enabled, tts_reward)
+                                VALUES (?, 0, 1, 1, ?, '', '', 1, 50, 15, 1, 0, '')
                             ''', (clean_name, clean_name))
                         else:
                             # Update existing entry - mark as joined
@@ -576,8 +576,8 @@ class Bot(commands.Bot):
                 c.execute('''
                     INSERT INTO channel_configs 
                     (channel_name, tts_enabled, voice_enabled, join_channel, owner, 
-                     trusted_users, ignored_users, use_general_model, lines_between_messages, time_between_messages, currently_connected, tts_delay_enabled)
-                    VALUES (?, 0, 1, 1, ?, '', '', 1, 50, 15, 0, 0)
+                     trusted_users, ignored_users, use_general_model, lines_between_messages, time_between_messages, currently_connected, tts_delay_enabled, tts_reward)
+                    VALUES (?, 0, 1, 1, ?, '', '', 1, 50, 15, 0, 0, '')
                 ''', (clean_channel, clean_channel))
         
         conn.commit()
@@ -1488,8 +1488,8 @@ class Bot(commands.Bot):
                             c.execute('''
                                 INSERT INTO channel_configs 
                                 (channel_name, tts_enabled, voice_enabled, join_channel, owner, 
-                                trusted_users, ignored_users, use_general_model, lines_between_messages, time_between_messages, currently_connected, tts_delay_enabled, pubsub_bits, pubsub_points)
-                                VALUES (?, 0, 1, 1, ?, '', '', 1, 50, 15, 0, 0, 0, 0)
+                                trusted_users, ignored_users, use_general_model, lines_between_messages, time_between_messages, currently_connected, tts_delay_enabled, pubsub_bits, pubsub_points, tts_reward)
+                                VALUES (?, 0, 1, 1, ?, '', '', 1, 50, 15, 0, 0, 0, 0, '')
                             ''', (clean_name, clean_name))
                         else:
                             # Update existing entry to make sure join_channel is enabled
@@ -1870,15 +1870,36 @@ class Bot(commands.Bot):
         try:
             async with aiosqlite.connect(self.db_file) as conn:
                 c = await conn.cursor()
-                await c.execute("SELECT pubsub_points FROM channel_configs WHERE channel_name = ?", (channel_name.lstrip('#'),))
+                await c.execute("SELECT pubsub_points, tts_reward, voice_preset FROM channel_configs WHERE channel_name = ?", (channel_name.lstrip('#'),))
                 row = await c.fetchone()
                 if not row or not row[0]:
                     return  # Points tracking is disabled
+                
+                tts_reward = row[1]
+                voice_preset = row[2]
+                
         except Exception as e:
             self.logger.error(f"Failed to check pubsub_points config: {e}")
             return
             
         self.logger.info(f"Channel point redemption: {reward_title} by {user_name} in {channel_name}")
+        
+        # 1. Check if this is a TTS Reward redemption!
+        if tts_reward and tts_reward.lower() == reward_title.lower() and event.input:
+            self.logger.info(f"TTS Channel Point Reward triggered by {user_name}: {event.input}")
+            import uuid
+            fake_msg_id = f"cp_tts_{uuid.uuid4().hex[:8]}"
+            timestamp_str = datetime.now().isoformat()
+            
+            from bot.tts import start_tts_processing
+            start_tts_processing(
+                input_text=event.input,
+                channel_name=channel_name.lstrip('#'),
+                db_file=self.db_file,
+                message_id=fake_msg_id,
+                timestamp_str=timestamp_str,
+                voice_preset_override=voice_preset
+            )
         
         # Forward this to the custom command logic if the reward title matches a command!
         # We simulate a Twitch message object since our custom command logic requires one.
@@ -2955,8 +2976,8 @@ def insert_initial_channels_to_db(db_file, channels):
 
     for channel in channels:
         c.execute('''
-            INSERT INTO channel_configs (channel_name, tts_enabled, voice_enabled, join_channel, owner, trusted_users, ignored_users, use_general_model, lines_between_messages, time_between_messages, currently_connected, tts_delay_enabled)
-            SELECT ?, 0, 0, 1, ?, '', '', 1, 100, 0, 0, 0
+            INSERT INTO channel_configs (channel_name, tts_enabled, voice_enabled, join_channel, owner, trusted_users, ignored_users, use_general_model, lines_between_messages, time_between_messages, currently_connected, tts_delay_enabled, tts_reward)
+            SELECT ?, 0, 0, 1, ?, '', '', 1, 100, 0, 0, 0, ''
             WHERE NOT EXISTS(SELECT 1 FROM channel_configs WHERE channel_name = ?)
         ''', (channel, channel, channel))  
     
