@@ -500,6 +500,10 @@ class MockbotDashboard(App):
                 # Route through the unified message queue to ensure proper rate limits and DB logging
                 await self.bot.send_message_to_channel(channel_name, message)
                 
+                # Surface the message in the TUI stream log (is_bot_message=True prevents it from adding to Markov DB)
+                if hasattr(self.bot, 'my_logger'):
+                    self.bot.my_logger.log_message(channel_name, self.bot.nick, message, is_bot_message=True)
+                
         elif cmd == 'speak':
             if self.current_context in ("Global", "System"):
                 self._cmd_log("[bold red]Error:[/bold red] Cannot 'speak' in Global context. Use 'use #channel' first.")
@@ -512,6 +516,11 @@ class MockbotDashboard(App):
                 msg = self.bot.generate_message(channel_name)
                 if msg:
                     await self.bot.send_message_to_channel(channel_name, msg)
+                    
+                    # Surface the message in the TUI stream log
+                    if hasattr(self.bot, 'my_logger'):
+                        self.bot.my_logger.log_message(channel_name, self.bot.nick, msg, is_bot_message=True)
+                        
                     self._cmd_log(f"[bold green]Forcing bot to speak in {self.current_context}...[/bold green]")
                 else:
                     self._cmd_log(f"[bold red]Error:[/bold red] Failed to generate message for {self.current_context}.")
