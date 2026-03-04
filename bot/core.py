@@ -1013,7 +1013,8 @@ class Bot(commands.Bot):
     def create_channel_model(self, channel_name, file_text, cache_file_path):
         """Create a model for a specific channel and save it to the cache."""
         try:
-            self.my_logger.print_message(f"Compiling individual brain model for #{channel_name}...")
+            chan_color = self.get_channel_color(channel_name)
+            self.my_logger.print_message(f"Compiling individual brain model for [color({chan_color})]#{channel_name}[/]...")
             channel_model = markovify.Text(file_text)
             self.models[channel_name] = channel_model
             
