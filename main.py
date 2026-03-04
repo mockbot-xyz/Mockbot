@@ -184,7 +184,10 @@ def main():
         loop.run_until_complete(run_concurrently())
         
         # Ensure proper cleanup after run_concurrently finishes
-        loop.run_until_complete(bot_instance.close())
+        try:
+            loop.run_until_complete(bot_instance.close())
+        except AttributeError:
+            pass # Websocket keeper wasn't instantiated yet due to early crash
         loop.close()
 
         

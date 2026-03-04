@@ -126,7 +126,7 @@ class MockbotDashboard(App):
     
     Input:focus {
         border: none;
-        background: $surface-light;
+        background: $surface-lighten-2;
         color: $text;
     }
     
