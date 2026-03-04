@@ -1,6 +1,6 @@
 # Custom Commands & Grammar
 
-Mockbot's most powerful feature is its **Custom Command Engine**, inspired by the popular Twitch bot *Funtoon*. It allows you to build infinitely randomizing chat responses and minigames!
+Mockbot features a **Custom Command Engine**, inspired by the Twitch bot *Funtoon*. It allows you to build randomized chat responses and text games.
 
 ## Creating Basic Commands
 
@@ -13,7 +13,7 @@ You can create, edit, or delete static commands directly from chat:
 
 ## Making Commands Interactive (Variables)
 
-Commands become fun when they react to the people using them. Mockbot uses "Tags" (words wrapped in `<{ }>` brackets). When your command fires, Mockbot swaps these tags out for real information!
+Commands can be configured to react to user input. Mockbot uses "Tags" (words wrapped in `<{ }>` brackets). When your command fires, Mockbot replaces these tags with corresponding variables.
 
 *   **`<{sender}>`**: Automatically swaps to the username of the person who typed the command.
 *   **`<{input}>`**: Automatically swaps to anything the user typed *after* the command.
@@ -24,7 +24,7 @@ Commands become fun when they react to the people using them. Mockbot uses "Tags
     
     If `firestarman` types `!slap the wall`, the bot outputs: `firestarman slaps the wall!`
 
-## Grammar Word Pools (The fun part!)
+## Grammar Word Pools
 
 Instead of typing the exact same text every time, you can tell the bot to randomly pick words from a "Word Pool". Pools are surrounded by hashtags like `#rule_name#`.
 
@@ -39,7 +39,7 @@ We are going to create a pool called "weapons".
 
 *   Type: `!addc !attack <{sender}> strikes <{input}> with #weapons#!`
 
-Now, typing `!attack the boss` might result in `firestarman strikes the boss with a folding chair!` or it might say `...with a huge trout!`. It's random every time!
+Now, typing `!attack the boss` might result in `firestarman strikes the boss with a folding chair!` or `...with a huge trout!`. The output is randomized.
 
 !!! note "Checking your pools"
     *   `!grammar list <rule>`: Show all the items you've added to a specific pool.
@@ -47,7 +47,7 @@ Now, typing `!attack the boss` might result in `firestarman strikes the boss wit
 
 ## Moderation Actions (Auto-Timeouts)
 
-Custom commands can execute **real Twitch timeouts**. This is how you make games like "Russian Roulette".
+Custom commands can execute **real Twitch timeouts**. This can be used to create chat minigames.
 
 ### The Timeout Tag
 
@@ -80,4 +80,4 @@ To prevent abuse, Mockbot will **ONLY** honor a `{timeout...}` tag if the user t
     2. **Create the command:**
         *   `!addc !spin #roulette#`
     
-    Now, when a viewer types `!spin`, they have a 1-in-6 chance of being timed out for 60 seconds automatically by the bot!
+    Now, when a viewer types `!spin`, they have a 1-in-6 chance of being timed out for 60 seconds automatically by the bot.

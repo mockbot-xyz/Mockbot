@@ -1,6 +1,6 @@
 # Dynamic Channel Variables
 
-Mockbot supports saving numbers to a database for your channel. This lets you make things like Death Counters, Win Streaks, or "Days since we last messed up" counters!
+Mockbot supports saving numeric variables to a database for your channel. This allows the creation of Death Counters, Win Streaks, and similar trackers.
 
 These variables can be changed using Custom Commands, and they will automatically display on your TTS Web Overlay on stream.
 
@@ -14,16 +14,16 @@ Type this into your Twitch chat:
 
 **2. How it works:**
 *   `<{var:deaths}>` tells the bot to look into the database, find the number for "deaths", and print it in chat.
-*   `{var_add:deaths:1}` is an invisible tag that tells the database to *increase* the death count by 1 for next time!
+*   `{var_add:deaths:1}` is an invisible tag that tells the database to *increase* the death count by 1 for next time.
 
 **3. Try it out:**
-If your deaths were at `3`, typing `!deathadd` will print `*BANG* You died! Death Count: 4` in chat. Next time you type it, it will say `5`!
+If your deaths were at `3`, typing `!deathadd` will print `*BANG* You died! Death Count: 4` in chat. Subsequent executions will continue to increment the value.
 
 ## Fixing Mistakes
-Did chat add a death when you didn't actually die? You can force the variable back to whatever number you want using the `var_set` tag.
+You can manually set the variable to a specific number using the `var_set` tag.
 
 *   `!addc !fixdeath Setting deaths back to 0! {var_set:deaths:0}`
 
 ## Showing It On Stream
 
-You do not need to do any extra work to show these on stream. The standard TTS Web Overlay (`http://localhost:5050/overlay/<channel>`) will automatically detect your channel's variables and display them as badges beneath the audio visualizer block!
+The standard TTS Web Overlay (`http://localhost:5050/overlay/<channel>`) will automatically detect your channel's variables and display them as badges beneath the audio visualizer block.

@@ -1,10 +1,10 @@
 # Twitch Interactions (Polls & Timers)
 
-Mockbot has built-in support for native Twitch API polls and timed chat messages. No need to open your Creator Dashboard!
+Mockbot has built-in support for native Twitch API polls and timed chat messages. It is not required to open the Creator Dashboard.
 
 ## Creating Twitch Polls
 
-You can launch a native Twitch Poll directly from the chat UI without lifting a finger from your keyboard.
+You can launch a native Twitch Poll directly from the chat UI using chat commands.
 
 *   **Syntax**: `!poll <duration_in_minutes> <Question> | <Option 1> | <Option 2> | [Option 3...]`
 *   **Example**: `!poll 5 What game should I play tonight? | Mario | Zelda | Halo`
@@ -13,17 +13,17 @@ You can launch a native Twitch Poll directly from the chat UI without lifting a 
     *   Minimum 2 options, maximum of 5 options. 
     *   Duration must be between **15 seconds** and **30 minutes**.
 
-## Timed Message Pools (The "Shoutout" feature)
+## Timed Message Pools (Shoutouts)
 
-Timers are rotating lists of messages that the bot will broadcast automatically over time. This is perfect for dropping your Discord links, social media plugs, or reminders for people to subscribe!
+Timers are rotating lists of messages that the bot will broadcast automatically over time. This can be used for Discord links, social media plugs, or reminders for people to subscribe.
 
 1. **Create the timer:**
     *   *Type:* `!mockbot timer add socials 30`
-    *   *What it does:* Creates a timer called "socials" that will go off every 30 minutes.
+    *   *What it does:* Creates a timer called "socials" that will trigger every 30 minutes.
 2. **Add messages to it:**
-    *   *Type:* `!mockbot timer msg socials Join our community Discord at discord.gg/example!`
-    *   *Type:* `!mockbot timer msg socials Follow me on Twitter at @example!`
-    *   *What it does:* The bot will now cycle through these messages every 30 minutes!
+    *   *Type:* `!mockbot timer msg socials Join our community Discord at discord.gg/example`
+    *   *Type:* `!mockbot timer msg socials Follow me on Twitter at @example`
+    *   *What it does:* The bot will cycle through these messages every 30 minutes.
 
 If you need to check or delete your timers:
 
