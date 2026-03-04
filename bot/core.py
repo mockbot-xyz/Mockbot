@@ -246,6 +246,9 @@ class Bot(commands.Bot):
         self.ignored_users = []
         self.chat_line_count = 0
         self.last_message_time = time.time()
+        self.last_global_message_time = datetime.now()
+        self.is_sleeping = False
+        
         # PERFORMANCE: Use memory-efficient caches with size limits to prevent memory leaks
         self.user_colors = LRUCache(maxsize=1000)  # Limit to 1000 users
         self.channel_colors = LRUCache(maxsize=100)  # Limit to 100 channels
@@ -308,6 +311,9 @@ class Bot(commands.Bot):
         self.message_request_check = None
 
         self.message_request_check = self.loop.create_task(self.message_request_checker())
+        
+        self.live_streamers = set()
+        self.live_stream_monitor_task = self.loop.create_task(self.live_stream_monitor_loop())
         
     async def send_message_to_channel(self, channel_name, message):
         """Send a message to a specific channel."""
@@ -1553,9 +1559,10 @@ class Bot(commands.Bot):
         # Step 9: Start background DB writer & Timed Message Loop
         try:
             if verbose:
-                print(f"{YELLOW}Step 9: Starting background DB writer and Timed Message Loop...{RESET}")
+                print(f"{YELLOW}Step 9: Starting background DB writer, Timed Message Loop, and Sleep Monitor...{RESET}")
             self.db_flush_task = self.loop.create_task(self.background_db_writer())
             self.timed_msg_task = self.loop.create_task(self.timed_message_loop())
+            self.sleep_monitor_task = self.loop.create_task(self.sleep_monitor_loop())
             if verbose:
                 print(f"{GREEN}✅ Background loops started{RESET}")
         except Exception as e:
@@ -1648,12 +1655,32 @@ class Bot(commands.Bot):
         # Mark connection as successful for reconnection manager
         self.connection_manager.mark_connected()
 
+    async def sleep_monitor_loop(self):
+        """Monitors global chat activity and suspends heavy background tasks during long quiet periods (15m)."""
+        self.logger.info("Smart Sleep Monitor started.")
+        while True:
+            try:
+                await asyncio.sleep(60.0)  # Check every minute
+                delta = (datetime.now() - self.last_global_message_time).total_seconds()
+                
+                # If total silence > 15 minutes and we aren't asleep yet
+                if delta > 900 and not self.is_sleeping:
+                    self.is_sleeping = True
+                    self.logger.info("Global chat has been silent for 15+ minutes. Entering Smart Sleep Mode.")
+                    self.my_logger.print_message("[dim italic]Entering Smart Sleep Mode due to inactivity...[/dim italic]")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Error in sleep monitor: {e}")
+
     async def timed_message_loop(self):
         """Background asynchronous task that periodically evaluates and sends Timed Messages."""
         self.logger.info("Timed message loop started.")
         while True:
             try:
                 await asyncio.sleep(60.0)  # Check every 60 seconds
+                if self.is_sleeping:
+                    continue  # Do not dispatch timed messages or query DB if the bot is globally sleeping
                 
                 try:
                     import aiosqlite
@@ -1788,6 +1815,36 @@ class Bot(commands.Bot):
             except Exception as e:
                 self.logger.error(f"Unexpected error in background DB writer: {e}")
                 await asyncio.sleep(2.0)
+
+    async def live_stream_monitor_loop(self):
+        """Periodically check which of our joined channels are currently live on Twitch."""
+        # Wait a bit before first check so bot can init fully
+        await asyncio.sleep(15)
+        while True:
+            try:
+                if self._joined_channels:
+                    check_channels = [c.lstrip('#') for c in self._joined_channels]
+                    live_set = set()
+                    
+                    # fetch_streams takes a max of 100 user logins at a time
+                    for i in range(0, len(check_channels), 100):
+                        chunk = check_channels[i:i+100]
+                        try:
+                            streams = await self.fetch_streams(user_logins=chunk)
+                            for stream in streams:
+                                live_set.add(stream.user.name.lower())
+                        except Exception as chunk_err:
+                            self.logger.error(f"Failed to fetch stream chunk: {chunk_err}")
+                            
+                    self.live_streamers = live_set
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Unexpected error in live stream monitor: {e}")
+                
+            # Check every 3 minutes to avoid API spam
+            await asyncio.sleep(180)
 
     async def event_pubsub_bits(self, event: pubsub.PubSubBitsMessage):
         """Handle incoming Bits/Cheers via PubSub."""
@@ -2035,23 +2092,37 @@ class Bot(commands.Bot):
 
     # The function event_message is called whenever a new message is received in a channel.
     async def event_message(self, message):
+        # Update the global tracker to stave off Sleep Mode
+        self.last_global_message_time = datetime.now()
+        if self.is_sleeping:
+            self.is_sleeping = False
+            self.logger.info("Chat activity detected! Waking up from Smart Sleep Mode.")
+            self.my_logger.print_message("[bold yellow]Waking up from Smart Sleep Mode![/bold yellow]")
+            
         # Ignore messages from the bot itself or messages with no author.
         if message.author is None or message.author.name.lower() == self.nick.lower():
             return
 
         channel_name = message.channel.name.lower()
+        author_name = message.author.name.lower()
+        
+        # Check ignored users early, before logging
+        ignored_users = [user.lower() for user in self.channel_settings[channel_name]['ignored_users']] if channel_name in self.channel_settings else []
+        if author_name in ignored_users:
+            return
+            
         # Log the message and check for bad words.
-        message_clean = self.my_logger.log_message(channel_name, message.author.name, message.content)
+        message_clean = self.my_logger.log_message(
+            channel_name, 
+            message.author.name, 
+            message.content, 
+            color_hex=message.tags.get('color') if getattr(message, 'tags', None) else None
+        )
         if not message_clean:
             return
 
-        # Fetch the channel settings and ignored users for the current channel.
+        # Fetch the channel settings for the current channel.
         lines_between, time_between, tts_enabled, voice_enabled, random_chance, log_dice = await self.fetch_channel_settings(channel_name)
-        ignored_users = [user.lower() for user in self.channel_settings[channel_name]['ignored_users']] if channel_name in self.channel_settings else []
-
-        # Ignore messages from ignored users.
-        if message.author.name.lower() in ignored_users:
-            return
 
         # --- CUSTOM COMMANDS & GRAMMAR (Funtoon Style) ---
         # Any message's first word could technically be a custom command trigger, no "!" required.
@@ -2278,27 +2349,21 @@ class Bot(commands.Bot):
                                 )
                                 
                                 if tts_success:
-                                    self.logger.info(f"TTS generation successful for {channel_name}. Sending message now.")
-                                    # Send message after TTS is ready
-                                    await channel_obj.send(response)
-                                    self.my_logger.log_message(channel_name, self.nick, response, is_bot_message=True)
+                                    self.logger.info(f"TTS generation successful for {channel_name}. Queuing message now.")
                                 else:
-                                    self.logger.warning(f"TTS generation failed for {channel_name}. Sending message without TTS.")
-                                    # Fallback: send message even if TTS failed
-                                    await channel_obj.send(response)
-                                    self.my_logger.log_message(channel_name, self.nick, response, is_bot_message=True)
+                                    self.logger.warning(f"TTS generation failed for {channel_name}. Queuing message anyway.")
+                                
+                                await self.handle_message_request(channel_name, response)
 
                             except Exception as e:
                                 self.logger.error(f"Error in TTS delay mode for {channel_name}: {e}")
-                                # Fallback: send message even if TTS failed
-                                await channel_obj.send(response)
-                                self.my_logger.log_message(channel_name, self.nick, response, is_bot_message=True)
+                                # Fallback: queue message even if TTS failed
+                                await self.handle_message_request(channel_name, response)
 
-                        # NORMAL MODE: Send message immediately, then generate TTS
+                        # NORMAL MODE: Queue message immediately, then generate TTS
                         else:
-                            # Send the response immediately
-                            await channel_obj.send(response)
-                            self.my_logger.log_message(channel_name, self.nick, response, is_bot_message=True)
+                            # Queue the response immediately
+                            await self.handle_message_request(channel_name, response)
 
                             # Generate TTS asynchronously after message is sent
                             if self.enable_tts and tts_enabled:

@@ -140,22 +140,31 @@ def main():
         sys.stdout.flush()
         
         # Initialize Textual Dashboard
+        print("[DEBUG] Importing MockbotDashboard from bot.tui...")
         from bot.tui import MockbotDashboard
+        print("[DEBUG] Importing start_server from bot.overlay...")
         from bot.overlay import start_server
         import bot.logger
         
+        print("[DEBUG] Instantiating MockbotDashboard...")
         tui_app = MockbotDashboard(bot=bot_instance)
         bot.logger.TUI_LOG_CALLBACK = tui_app.write_log
         
         async def run_concurrently():
+            print("[DEBUG] Entering run_concurrently. Starting overlay server...")
             # Start the OBS overlay web server
             # start_server returns an AppRunner but doesn't block
             runner = await start_server(port=5050)
+            print("[DEBUG] Overlay server started. Creating bot and TUI tasks...")
             
-            # Create tasks for both the bot and the TUI
-            # bot.start() is the coroutine version of bot.run()
-            bot_task = asyncio.create_task(bot_instance.start()) 
+            # Create task for the TUI first
             tui_task = asyncio.create_task(tui_app.run_async())
+            
+            # Wait a moment to ensure TUI mounts before bot starts logging
+            await asyncio.sleep(1)
+            
+            # Create task for the bot
+            bot_task = asyncio.create_task(bot_instance.start())
             
             # Wait for either to finish (likely TUI quit)
             done, pending = await asyncio.wait(

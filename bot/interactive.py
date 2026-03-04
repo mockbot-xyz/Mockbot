@@ -108,8 +108,11 @@ class InteractiveShell:
             channel = args[0]
             if not channel.startswith('#'):
                 channel = f"#{channel}"
-            await self.bot.join_channel(channel)
-            self.bot.ensure_channel_configs() # Ensure config exists
+            try:
+                await self.bot.join_channel(channel)
+                print(f"✅ Joined {channel}")
+            except Exception as e:
+                print(f"❌ Failed to join {channel}: {e}")
             
         elif cmd == 'part':
             if not args:
@@ -118,10 +121,19 @@ class InteractiveShell:
             channel = args[0]
             if not channel.startswith('#'):
                 channel = f"#{channel}"
-            # Need to implement part logic in core if not exists (TwitchIO has part)
-            # await self.bot.part_channels([channel]) 
-            # TwitchIO part is mostly just closing connection or sending part command
-            print("Parting not fully implemented in core logic for specific channels via CLI yet.")
+                
+            try:
+                success = await self.bot.leave_channel(channel)
+                if success:
+                    import aiosqlite
+                    async with aiosqlite.connect(self.bot.db_file) as conn:
+                        await conn.execute("UPDATE channel_configs SET join_channel = 0 WHERE channel_name = ?", (channel.lstrip('#'),))
+                        await conn.commit()
+                    print(f"✅ Left {channel}")
+                else:
+                    print(f"❌ The bot failed to leave {channel}")
+            except Exception as e:
+                print(f"❌ Failed to part {channel}: {e}")
 
         elif cmd == 'say':
             if self.current_context == "Global":

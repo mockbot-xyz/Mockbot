@@ -377,10 +377,6 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             # Record in database and notify web interface
             db_file_path_relative = full_path.replace('static/', '', 1)
             
-            # Restore stdout/stderr temporarily for critical DB logging
-            sys.stdout = original_stdout
-            sys.stderr = original_stderr
-            
             logged_tts_table_id = None # Renamed from logged_tts_id for clarity
             timestamp_for_log = timestamp # Use the passed original message timestamp
 
@@ -441,9 +437,8 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             if logged_tts_table_id is not None:
                 notify_new_audio_available(channel_name, message_id, full_path, input_text) 
             
-            # Print status update directly — because we used contextlib earlier, 
-            # this will hit the prompt_toolkit patched stdout successfully!
-            print(f"✅ TTS audio ready! ({full_path})")
+            # Log status update to be captured by the TUI
+            logging.getLogger('bot').info(f"[bright_green]✅ TTS audio ready! ({full_path})[/]")
             
             # Log internally without printing to console (already done above with [TTS DB LOG])
             # logging.info(f"TTS audio file generated: {full_path}. Logged to tts_logs with table ID: {logged_tts_table_id} (linked to original message_id: {message_id})")
@@ -677,7 +672,7 @@ def start_tts_processing(input_text, channel_name, db_file='./messages.db', mess
         daemon=True
     )
     
-    print(f"🎙️ Generating TTS audio... ({voice_preset_override or 'default voice'})")
+    logging.getLogger('bot').info(f"[cyan]🎙️ Generating TTS audio... ({voice_preset_override or 'default voice'})[/]")
     tts_thread.start()
     # Logging that the thread has been dispatched. The thread itself will log its entry.
     # logging.info(f"TTS processing thread dispatched for original message_id {message_id} in channel {channel_name}.")
