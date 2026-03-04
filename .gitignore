@@ -82,3 +82,8 @@ CODE_REVIEW_PLAN.md
 bot_heartbeat.json
 bot.pid
 site/
+
+# User Data
+colors.json
+badwords.txt
+*.code-workspace
