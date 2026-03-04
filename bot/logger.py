@@ -147,6 +147,10 @@ class Logger:
             db_tag = "🚫"
             not_logged_tag = " [dim red]🚫 not logged[/]"
             not_logged_tag_ansi = f" {RED}🚫 not logged{RESET}"
+        elif is_bot_message:
+            db_tag = "🤖"
+            not_logged_tag = ""
+            not_logged_tag_ansi = ""
         else:
             db_tag = "💾"
             not_logged_tag = ""
