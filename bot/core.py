@@ -1013,6 +1013,7 @@ class Bot(commands.Bot):
     def create_channel_model(self, channel_name, file_text, cache_file_path):
         """Create a model for a specific channel and save it to the cache."""
         try:
+            self.my_logger.print_message(f"Compiling individual brain model for #{channel_name}...")
             channel_model = markovify.Text(file_text)
             self.models[channel_name] = channel_model
             
@@ -1212,7 +1213,6 @@ class Bot(commands.Bot):
                 
                 # Save as dictionary
                 json.dump(self.cache_build_times, f, indent=2)
-                self.logger.info("Saved cache build times in dictionary format")
         except Exception as e:
             self.logger.info(f"Error saving cache build times: {e}")
 
