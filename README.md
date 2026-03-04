@@ -50,7 +50,8 @@ owner = your_username
 ## Commands (Twitch Chat)
 
 > [!NOTE]
-> For a full, comprehensive breakdown of all features, custom commands, timers, and Tracery grammar syntax, please read the [Comprehensive Documentation](DOCUMENTATION.md).
+> For a full, comprehensive breakdown of all features, custom commands, timers, and Tracery grammar syntax, please check out the **Mockbot Wiki**!
+> You can launch the Wiki locally at any time by running `./launch.sh docs`.
 
 Commands are prefixed with `!mockbot` (or `!mb` if configured), except for dedicated actions.
 
@@ -80,15 +81,16 @@ Whenever the bot speaks, it will slide on screen with a stylish Cyber-Noir text 
 
 ## File Structure
 
-```
+```text
 .
 ├── main.py             # Entry point
 ├── bot/                # Core logic package
 │   ├── core.py         # Bot class, Subscriptions, & Event loops
 │   ├── commands.py     # Command parsing & logic
 │   ├── tts.py          # Bark TTS generation queue
-│   ├── interactive.py  # PromptToolkit terminal UI
+│   ├── tui.py          # Terminal UI
 │   └── ...
+├── docs/               # MkDocs Wiki Documentation
 ├── launch.sh           # Setup & Management script
 ├── messages.db         # Persistent context and commands DB
 └── logs/               # Traceback log files
