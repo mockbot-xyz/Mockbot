@@ -20,9 +20,29 @@ These are the commands you'll use most often to control how chatty Mockbot is.
 
 ## PubSub Integrations (Bits & Points)
 
-"PubSub" is just a fancy term for Twitch's live event system. Mockbot can "listen" for when someone Cheers bits or redeems a Channel Point reward, and automatically generate a chat message reaction!
+"PubSub" is just a fancy term for Twitch's live event system. Mockbot can "listen" for when someone Cheers bits or redeems a Channel Point reward on your channel.
 
-*   **Type `!mockbot bits on`**: The bot will now react automatically when someone cheers!
-*   **Type `!mockbot points on`**: The bot will now react automatically when someone redeems Channel Points!
+### 1. Setting Up Permissions
+For Mockbot to actually "see" your stream's Cheers and Point redemptions, the Twitch Account you connected the bot to inside `settings.conf` **must have the right permissions**.
+
+When generating your `tmi_token` OAuth password, make sure you checked these two boxes:
+*   `bits:read` (Allows the bot to see cheers)
+*   `channel:read:redemptions` (Allows the bot to see channel points)
+
+### 2. Turn It On In Chat
+Once your bot has permission, you can turn the features on or off directly from your Twitch chat:
+
+*   **Type `!mockbot bits on`**: The bot will now monitor cheers. When someone Cheers, it will automatically drop a message: *"Thank you Firestarman for the 100 bits! bloodTrail"*
+*   **Type `!mockbot points on`**: The bot will now monitor your Channel Point redemptions.
 
 *(You can turn these off at any time by typing `!mockbot bits off`)*
+
+### 3. The Power of Channel Points
+Mockbot's channel points integration is extremely powerful. **If you name a Twitch Channel Point Reward the exact same name as a Bot Command, the bot will execute it!**
+
+For example:
+1. You go to your Twitch Creator Dashboard and create a new Channel Point Reward.
+2. You name the reward: `!speak`
+3. Whenever a viewer redeems that reward, Mockbot will automatically generate and send a Markov message, just as if they typed `!speak` in chat! 
+
+This works for all custom commands and Funtoon grammar too! You could attach a "Russian Roulette Time Out" command directly to a Channel Point reward!
