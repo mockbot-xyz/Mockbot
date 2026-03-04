@@ -648,7 +648,7 @@ class Bot(commands.Bot):
                     # Format log dice
                     log_dice_status = "[green]on[/green]" if log_dice else "[red]off[/red]"
                     
-                    channel_display = f"[color({self.get_channel_color(channel)})]#{channel}[/]"
+                    channel_display = f"[color({self.my_logger.color_manager.get_channel_color(channel)})]#{channel}[/]"
                     
                     # Add to table
                     table_data.append([
@@ -727,7 +727,7 @@ class Bot(commands.Bot):
                     await c.execute('SELECT COUNT(*) FROM messages WHERE is_bot_response = 0 AND channel = ?', (clean_channel,))
                     row = await c.fetchone()
                     msg_count = row[0] if row else 0
-                    chan_style = f"color({self.get_channel_color(clean_channel)})"
+                    chan_style = f"color({self.my_logger.color_manager.get_channel_color(clean_channel)})"
                     out(f"\n🧠 [bold]Detailed Brain Stats for [{chan_style}]#{clean_channel}[/]:[/bold]")
                     out(f"  • Raw Messages in DB: {msg_count:,}")
                     out(f"  • Source Model:       {model_type} ({model_name})")
@@ -823,7 +823,7 @@ class Bot(commands.Bot):
                                 
                         # Add to table
                         table_data.append([
-                            f"[color({self.get_channel_color(clean_channel)})]#{clean_channel}[/]", 
+                            f"[color({self.my_logger.color_manager.get_channel_color(clean_channel)})]#{clean_channel}[/]", 
                             f"{count:,}",
                             model_type,
                             cache_size_str,
@@ -1013,7 +1013,7 @@ class Bot(commands.Bot):
     def create_channel_model(self, channel_name, file_text, cache_file_path):
         """Create a model for a specific channel and save it to the cache."""
         try:
-            chan_color = self.get_channel_color(channel_name)
+            chan_color = self.my_logger.color_manager.get_channel_color(channel_name)
             self.my_logger.print_message(f"Compiling individual brain model for [color({chan_color})]#{channel_name}[/]...")
             channel_model = markovify.Text(file_text)
             self.models[channel_name] = channel_model
@@ -2065,20 +2065,6 @@ class Bot(commands.Bot):
             # Generate color based on username (simple hash)
             color_num = sum(ord(c) for c in username) % 200 + 20  # Range 20-220 to avoid dark colors
             self.user_colors[username] = color_num
-            return color_num
-            
-        return cached_color
-
-    def get_channel_color(self, channel_name):
-        """Get a consistent color number for a channel."""
-        clean_channel = channel_name.lstrip('#')
-        
-        # PERFORMANCE: Use cache with automatic memory management
-        cached_color = self.channel_colors.get(clean_channel)
-        if cached_color is None:
-            # Generate color based on channel name (simple hash)
-            color_num = sum(ord(c) for c in clean_channel) % 200 + 20  # Range 20-220
-            self.channel_colors[clean_channel] = color_num
             return color_num
             
         return cached_color
