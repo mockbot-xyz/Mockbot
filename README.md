@@ -49,6 +49,9 @@ owner = your_username
 
 ## Commands (Twitch Chat)
 
+> [!NOTE]
+> For a full, comprehensive breakdown of all features, custom commands, timers, and Tracery grammar syntax, please read the [Comprehensive Documentation](DOCUMENTATION.md).
+
 Commands are prefixed with `!mockbot` (or `!mb` if configured), except for dedicated actions.
 
 | Command | Usage | Description |
