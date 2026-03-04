@@ -120,14 +120,12 @@ class MockbotDashboard(App):
     Input {
         width: 1fr;
         border: none;
-        background: $surface;
-        padding: 0 1;
+        background: transparent;
+        padding: 0;
     }
     
     Input:focus {
         border: none;
-        background: $surface-light;
-        color: $text;
     }
     
     #channel_sidebar {
@@ -441,9 +439,9 @@ class MockbotDashboard(App):
         elif cmd == 'status':
             if self.bot:
                 if self.current_context == "Global":
-                    await self.bot.print_channel_status(out_func=self._cmd_log)
+                    await self.bot.print_channel_status()
                 else:
-                    await self.bot.print_channel_status(self.current_context.lstrip('#'), out_func=self._cmd_log)
+                    await self.bot.print_channel_status(self.current_context.lstrip('#'))
             else:
                 self._cmd_log("Bot instance not connected.")
                 
@@ -451,11 +449,11 @@ class MockbotDashboard(App):
             if self.bot:
                 if args:
                     target_channel = args[0].lstrip('#')
-                    await self.bot.print_brain_status(target_channel, out_func=self._cmd_log)
+                    await self.bot.print_brain_status(target_channel)
                 elif self.current_context != "Global":
-                    await self.bot.print_brain_status(self.current_context.lstrip('#'), out_func=self._cmd_log)
+                    await self.bot.print_brain_status(self.current_context.lstrip('#'))
                 else:
-                    await self.bot.print_brain_status(out_func=self._cmd_log)
+                    await self.bot.print_brain_status()
             else:
                 self._cmd_log("Bot instance not connected.")
                 
