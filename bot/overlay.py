@@ -152,7 +152,7 @@ async def serve_overlay(request):
             }}
 
             /* Transcript Area */
-            .transcript-area {
+            .transcript-area {{
                 background: #0f172a;
                 border-radius: 8px;
                 padding: 12px;
@@ -160,10 +160,10 @@ async def serve_overlay(request):
                 color: #cbd5e1;
                 min-height: 40px;
                 border: 1px solid #334155;
-            }
+            }}
 
             /* Variables Area */
-            .variables-area {
+            .variables-area {{
                 background: #0f172a;
                 border-radius: 8px;
                 padding: 12px;
@@ -174,21 +174,21 @@ async def serve_overlay(request):
                 flex-wrap: wrap;
                 gap: 8px;
                 min-height: 20px;
-            }
-            .var-badge {
+            }}
+            .var-badge {{
                 background: #334155;
                 padding: 4px 10px;
                 border-radius: 12px;
                 font-weight: 600;
                 font-size: 0.85rem;
                 box-shadow: 0 1px 2px rgba(0,0,0,0.2);
-            }
-            .var-name {
+            }}
+            .var-name {{
                 color: #94a3b8;
                 margin-right: 6px;
                 text-transform: uppercase;
                 font-size: 0.75rem;
-            }
+            }}
         </style>
     </head>
     <body>
