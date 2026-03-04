@@ -315,7 +315,16 @@ class MockbotDashboard(App):
         table.add_column("User", justify="right", no_wrap=True)
         table.add_column("Message", justify="left", ratio=1)
         
-        time_text = Text(f"[{msg_obj['timestamp']}] {msg_obj['tags']}", style="dim")
+        time_text = Text(f"[{msg_obj['timestamp']}] ", style="dim")
+        tags = msg_obj.get('tags', '').strip('[] ')
+        if tags == "BLK":
+            time_text.append("BLK ", style="bold red")
+        elif tags == "BOT":
+            time_text.append("BOT ", style="bold magenta")
+        elif tags == "LOG":
+            time_text.append("LOG ", style="bold green")
+        elif tags:
+            time_text.append(f"{tags} ", style="dim")
         
         chan_text = None
         if show_channel:
@@ -345,9 +354,6 @@ class MockbotDashboard(App):
                 user_style = f"bold {user_color}" if user_color else "bold"
             user_text = Text(f"<{msg_obj['username']}>", style=user_style)
             msg_text = Text.from_markup(msg_obj['message'], style="italic")
-            
-        if msg_obj.get("not_logged"):
-            msg_text.append(f" {msg_obj['not_logged']}", style="dim red")
             
         if chan_text:
             table.add_row(time_text, chan_text, user_text, msg_text)
