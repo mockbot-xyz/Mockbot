@@ -2,8 +2,6 @@
 
 A sophisticated Twitch chat bot with AI-powered text generation (Markov chains) and Text-to-Speech (Bark).
 
-Now fully refactored into a lightweight, efficient CLI application.
-
 ## Key Features
 
 - **AI Text Generation**: Learns from chat logs using Markov chains to create realistic bot personas.
