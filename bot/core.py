@@ -618,12 +618,12 @@ class Bot(commands.Bot):
                     channel, owner, trusted, ignored, voice, tts, join_enabled, time_between, lines_between, use_general, random_chance, log_dice = row
                     
                     # Format owner with color
-                    owner_display = f"[color({self.get_user_color(owner)})]{owner}[/]" if owner else "None"
+                    owner_display = f"[{self.my_logger.color_manager.get_user_color(owner)}]{owner}[/]" if owner else "None"
                     
                     # Format trusted users with colors
                     if trusted and trusted.strip():
                         trusted_display = ", ".join(
-                            f"[color({self.get_user_color(user.strip())})]{user.strip()}[/]"
+                            f"[{self.my_logger.color_manager.get_user_color(user.strip())}]{user.strip()}[/]"
                             for user in trusted.split(",") if user.strip()
                         )
                     else:
@@ -2053,21 +2053,6 @@ class Bot(commands.Bot):
                     self.logger.error(f"Failed to emit error to dashboard: {e}")
         except Exception as e:
             self.logger.error(f"Failed to log error to database: {e}")
-
-    def get_user_color(self, username):
-        """Get a consistent color number for a user."""
-        if not username or username.strip() == "":
-            return 7  # Default gray for empty usernames
-        
-        # PERFORMANCE: Use cache with automatic memory management
-        cached_color = self.user_colors.get(username)
-        if cached_color is None:
-            # Generate color based on username (simple hash)
-            color_num = sum(ord(c) for c in username) % 200 + 20  # Range 20-220 to avoid dark colors
-            self.user_colors[username] = color_num
-            return color_num
-            
-        return cached_color
 
     async def event_command_error(self, ctx, error):
         """Handle command errors."""
