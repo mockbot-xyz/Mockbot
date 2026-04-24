@@ -312,14 +312,14 @@ class Logger:
         self.log_info(f"time_between_messages: {time_between_messages}", Fore.YELLOW)
         self.log_info(f"lines_between_messages: {lines_between_messages}",Fore.YELLOW)
 
-    def error(self, message): # This was the second method named error, logging as info
+    def error(self, message, channel=None): # This was the second method named error, logging as info
         # This method should log errors. It was previously self.logger.info(message)
         # It should use the standard error logging mechanism.
         # For colored error output, it can call self.log_error or directly use self.logger.error
         # If self.log_error is preferred for consistent styling:
-        self.log_error(message)
+        self.log_error(message, channel=channel)
         # Or, if direct logging is preferred (CustomHandler will color it based on level):
-        # self.logger.error(message) 
+        # self.logger.error(message)
 
     # The second, redundant setup_logger method has been removed.
     # The setup_logger call is now in __init__.

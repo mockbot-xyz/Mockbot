@@ -1,12 +1,20 @@
 import os
+
 import time
 import asyncio
 import logging
 import re
 from datetime import datetime
 import sqlite3
-import requests
 import threading
+
+sqlite_tts_lock = threading.Lock()
+
+def thread_safe_db_connect(db_file, timeout=15.0):
+    with sqlite_tts_lock:
+        return sqlite3.connect(db_file, timeout=timeout)
+
+import requests
 import sys
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import nltk
@@ -17,15 +25,21 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 import configparser
 
+# PYTORCH 2.6 FIX: Monkey-patch torch.load to use weights_only=False globally for Bark compatibility
+import torch
+_original_torch_load = torch.load
+def _patched_torch_load(*args, **kwargs):
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+    return _original_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
+
 VOICES_DIRECTORY = './voices'
 db_file = 'messages.db'
 
 # Define database file
 db_file = 'messages.db'
 
-# Add lock to prevent concurrent TTS processing for Bark model
-bark_tts_lock = threading.Lock() # For process_text_thread
-async_tts_lock = asyncio.Lock() # For async def process_text, renamed from tts_lock for clarity
 
 # PERFORMANCE: TTS Model Cache and Thread Pool
 class TTSModelCache:
@@ -58,6 +72,20 @@ class TTSModelCache:
             # Load the model
             logging.info(f"TTS: Loading model into cache: {model_path}")
             try:
+                if model_path == "chatterbox":
+                    from chatterbox.tts import ChatterboxTTS
+                    device_str = "cuda" if device.type == "cuda" else "cpu"
+                    
+                    logging.getLogger('bot').warning("[yellow]📥 Loading Chatterbox Base Model. If this is the first execution, a 2.13GB background download will initiate. Please wait...[/yellow]")
+                    model = ChatterboxTTS.from_pretrained(device=device_str)
+                    
+                    cached_model = {'model': model, 'type': 'chatterbox'}
+                    self.cache[cache_key] = cached_model
+                    self.last_used[cache_key] = time.time()
+                    
+                    logging.info(f"TTS: Successfully cached Chatterbox model")
+                    return cached_model
+                
                 from transformers import AutoProcessor, BarkModel
                 import torch
                 
@@ -65,22 +93,14 @@ class TTSModelCache:
                 pytorch_version = torch.__version__
                 logging.info(f"TTS: Using PyTorch version {pytorch_version} with device {device}")
                 
-                # PYTORCH 2.6 FIX: Monkey-patch torch.load to use weights_only=False for Bark compatibility
-                original_torch_load = torch.load
-                def patched_torch_load(*args, **kwargs):
-                    if 'weights_only' not in kwargs:
-                        kwargs['weights_only'] = False
-                    return original_torch_load(*args, **kwargs)
-                torch.load = patched_torch_load
-                
                 try:
+                    processor = AutoProcessor.from_pretrained(model_path, local_files_only=True)
+                    # Force use of safetensors
+                    model = BarkModel.from_pretrained(model_path, use_safetensors=True, local_files_only=True)
+                except Exception as cache_err:
+                    logging.warning(f"TTS: Offline cache missing for {model_path}, attempting network fallback... ({cache_err})")
                     processor = AutoProcessor.from_pretrained(model_path)
-                    # Force use of safetensors to bypass PyTorch 2.6+ requirement for torch.load
-                    # This allows PyTorch 2.4 (needed for Tesla P40 sm_61 support) to work
                     model = BarkModel.from_pretrained(model_path, use_safetensors=True)
-                finally:
-                    # Restore original torch.load function
-                    torch.load = original_torch_load
                 
                 # Force CPU device if CPU-only mode
                 if str(device) == "cpu":
@@ -106,7 +126,7 @@ class TTSModelCache:
                     else:
                         processor.tokenizer.pad_token_id = 10000
                 
-                cached_model = {'processor': processor, 'model': model}
+                cached_model = {'processor': processor, 'model': model, 'type': 'bark'}
                 self.cache[cache_key] = cached_model
                 self.last_used[cache_key] = time.time()
                 
@@ -140,7 +160,7 @@ tts_thread_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts-work
 def fetch_latest_message():
     try:
         logging.debug(f"Fetching latest message from database: {db_file}")
-        conn = sqlite3.connect(db_file)
+        conn = thread_safe_db_connect(db_file)
         c = conn.cursor()
         c.execute("SELECT id, channel, timestamp, message_length, message FROM messages ORDER BY id DESC LIMIT 1")
         result = c.fetchone()
@@ -160,7 +180,7 @@ def get_voice_preset_cached(channel_name, db_file_path):
         if default_preset:
             return default_preset
         
-        conn = sqlite3.connect(db_file_path)
+        conn = thread_safe_db_connect(db_file_path)
         c = conn.cursor()
         c.execute("SELECT voice_preset FROM channel_configs WHERE channel_name = ?", (channel_name,))
         result = c.fetchone()
@@ -181,7 +201,7 @@ def get_bark_model_cached(channel_name, db_file_path):
         if default_model:
             return default_model
         
-        conn = sqlite3.connect(db_file_path)
+        conn = thread_safe_db_connect(db_file_path)
         c = conn.cursor()
         c.execute("SELECT bark_model FROM channel_configs WHERE channel_name = ?", (channel_name,))
         result = c.fetchone()
@@ -195,7 +215,106 @@ def get_bark_model_cached(channel_name, db_file_path):
 def get_bark_model_for_channel(channel_name, db_file):
     """Get bark model with caching for performance"""
     return get_bark_model_cached(channel_name, db_file)
+
+@lru_cache(maxsize=100)
+def get_tts_provider_cached(channel_name, db_file_path):
+    """PERFORMANCE: Cached TTS provider lookup to avoid repeated DB queries"""
+    try:
+        conn = thread_safe_db_connect(db_file_path)
+        c = conn.cursor()
+        c.execute("SELECT tts_provider FROM channel_configs WHERE channel_name = ?", (channel_name,))
+        result = c.fetchone()
+        return result[0] if result else 'bark'
+    except Exception as e:
+        logging.error(f"Error getting tts provider for channel {channel_name}: {e}")
+        return 'bark'
+    finally:
+        conn.close()
+
+def get_tts_provider_for_channel(channel_name, db_file):
+    """Get tts provider with caching for performance"""
+    return get_tts_provider_cached(channel_name, db_file)
+
+@lru_cache(maxsize=100)
+def get_advanced_tts_configs_cached(channel_name, db_file_path):
+    try:
+        conn = thread_safe_db_connect(db_file_path)
+        c = conn.cursor()
+        c.execute("""SELECT rvc_model, chatterbox_temperature, 
+                     chatterbox_exaggeration, bark_text_temp, bark_waveform_temp, rvc_pitch, rvc_index_rate, rvc_api_url 
+                     FROM channel_configs WHERE channel_name = ?""", (channel_name,))
+        result = c.fetchone()
+        if result:
+            return {
+                'rvc_model': result[0] or '',
+                'chatterbox_temperature': result[1] if result[1] is not None else 0.8,
+                'chatterbox_exaggeration': result[2] if result[2] is not None else 0.5,
+                'bark_text_temp': result[3] if result[3] is not None else 0.7,
+                'bark_waveform_temp': result[4] if result[4] is not None else 0.7,
+                'rvc_pitch': result[5] if result[5] is not None else 0,
+                'rvc_index_rate': result[6] if result[6] is not None else 0.75,
+                'rvc_api_url': result[7] if result[7] is not None else 'http://127.0.0.1:5051'
+            }
+    except Exception as e:
+        logging.error(f"Error getting advanced tts configs: {e}")
+    finally:
+        conn.close()
+    return {'rvc_model': '', 'chatterbox_temperature': 0.8, 'chatterbox_exaggeration': 0.5, 'bark_text_temp': 0.7, 'bark_waveform_temp': 0.7, 'rvc_pitch': 0, 'rvc_index_rate': 0.75, 'rvc_api_url': 'http://127.0.0.1:5051'}
+
+def apply_rvc_conversion(input_path, rvc_model_name, pitch=0, index_rate=0.75):
+    if not rvc_model_name: return False
+    
+    import requests
+    import shutil
+    import os
+    
+    rvc_endpoint = os.environ.get("RVC_API_URL", "http://127.0.0.1:5051")
+    
+    try:
+        logging.getLogger('bot').info(f"[RVC ENGINE] Requesting clone inference via native sandbox at {rvc_endpoint}...")
         
+        payload = {
+            "input_path": os.path.abspath(input_path),
+            "model_name": rvc_model_name,
+            "pitch": pitch,
+            "index_rate": index_rate
+        }
+        
+        for attempt in range(3):
+            try:
+                response = requests.post(f"{rvc_endpoint}/api/infer", json=payload, timeout=35)
+                if response.status_code == 200:
+                    data = response.json()
+                    tmp_file = data.get("tmp_file")
+                    if tmp_file and os.path.exists(tmp_file):
+                        shutil.move(tmp_file, input_path)
+                        logging.getLogger('bot').info(f"✅ FastApi RVC Conversion applied successfully for {rvc_model_name}")
+                        return True
+                    else:
+                        logging.getLogger('bot').error("[RVC ENGINE] Request returned 200 but failed to yield audio stream.")
+                        return False
+                else:
+                    logging.getLogger('bot').error(f"[RVC ENGINE] FastAPI Exception Code {response.status_code}: {response.text}")
+                    return False
+            except requests.exceptions.Timeout:
+                logging.getLogger('bot').warning(f"[RVC ENGINE] Request timed out on attempt {attempt+1}/3. Retrying...")
+                import time
+                time.sleep(2)
+            except requests.exceptions.ConnectionError:
+                logging.getLogger('bot').error(f"[RVC ENGINE] Target sandbox missing at {rvc_endpoint}! Did you run './launch.sh start-rvc' ?")
+                return False
+            except Exception as e:
+                logging.getLogger('bot').error(f"[RVC ENGINE] Tunnel crashed: {e}", exc_info=True)
+                return False
+        logging.getLogger('bot').error(f"[RVC ENGINE] Aborting conversion after 3 timeouts.")
+        return False
+            
+    except requests.exceptions.ConnectionError:
+        logging.getLogger('bot').error(f"[RVC ENGINE] Target sandbox missing at {rvc_endpoint}! Did you run './launch.sh start-rvc' ?")
+        return False
+    except Exception as e:
+        logging.getLogger('bot').error(f"[RVC ENGINE] Tunnel utterly crashed: {e}", exc_info=True)
+        return False
 
 def log_tts_file(message_id, channel_name, timestamp, file_path, voice_preset, input_text, db_file):
     file_path = file_path.replace('static/', '', 1)
@@ -203,7 +322,7 @@ def log_tts_file(message_id, channel_name, timestamp, file_path, voice_preset, i
         voice_preset = 'v2/en_speaker_5'
     conn = None
     try:
-        conn = sqlite3.connect(db_file, timeout=10.0) # Added timeout
+        conn = thread_safe_db_connect(db_file, timeout=10.0) # Added timeout
         c = conn.cursor()
         # Using INSERT OR IGNORE to handle potential duplicate message_ids gracefully
         c.execute("INSERT OR IGNORE INTO tts_logs (message_id, channel, timestamp, file_path, voice_preset, message) VALUES (?, ?, ?, ?, ?, ?)",
@@ -235,12 +354,10 @@ def initialize_tts():
     import torch
     import scipy.io.wavfile
 
-def process_text_thread(input_text, channel_name, db_file='./messages.db', full_path=None, timestamp=None, message_id=None, voice_preset=None, bark_model=None):
+def process_text_thread(input_text, channel_name, db_file='./messages.db', full_path=None, timestamp=None, message_id=None, voice_preset=None, bark_model=None, author_name=None):
     """Process TTS in a separate thread with silenced output"""
-    global bark_tts_lock
-    
-    # Log parameters *before* silencing, for critical debugging
-    logging.info(f"[TTS THREAD ENTRY] Params: input_text='{str(input_text)[:30]}...', channel='{channel_name}', db_file='{db_file}', full_path='{full_path}', timestamp='{timestamp}', message_id='{message_id}', voice_preset='{voice_preset}', bark_model='{bark_model}'")
+        # Log parameters *before* silencing, for critical debugging
+    logging.getLogger('bot').info(f"🎙️ [bold cyan]TTS Thread Initialized:[/bold cyan] '{str(input_text)[:40]}...' [dim](Provider mapping pending...)[/dim]", extra={'channel': channel_name})
     if message_id is None:
         logging.error("[TTS THREAD CRITICAL] message_id is None at entry. This will likely cause DB insert to fail or be incorrect.")
     if full_path is None:
@@ -250,8 +367,8 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
 
 
     # Acquire lock to ensure only one thread generates Bark audio at a time
-    with bark_tts_lock:
-        logging.info(f"[TTS THREAD] Acquired Bark TTS lock for message_id: {message_id}")
+    if True: # ThreadPoolExecutor handles concurrency
+        pass
         # Note: silence_output() moved to after model loading to allow progress bars
 
         try:
@@ -263,6 +380,7 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             import scipy.io.wavfile
             from transformers import AutoProcessor, BarkModel
             from nltk.tokenize import sent_tokenize
+            import torchaudio
         except ImportError as import_err:
             logging.error(f"[TTS THREAD FATAL ERROR] Failed to import critical TTS dependencies: {import_err}", exc_info=True)
             # Re-raise the error to be caught by the outer try-except in process_text_thread
@@ -297,82 +415,122 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             
             logging.info(f"TTS: Attempting to use device: {device_type_str}")
 
-            # PERFORMANCE: Get model from cache instead of loading each time
-            cached_model_data = tts_model_cache.get_model(model_path, device)
-            if not cached_model_data:
-                logging.error(f"[TTS THREAD FATAL ERROR] Failed to load or cache model: {model_path}")
-                raise RuntimeError(f"Model loading failed: {model_path}")
+            tts_provider = get_tts_provider_for_channel(channel_name, db_file)
+            logging.getLogger('bot').info(f"⚙️ [yellow]Processing Output:[/yellow] ({tts_provider} | Base: {bark_model}) for {channel_name}", extra={'channel': channel_name})
             
-            processor = cached_model_data['processor']
-            model = cached_model_data['model']
-
-            try:
-                pass  # Model loading is now handled by cache
-            except AttributeError as ae:
-                if 'get_default_device' in str(ae):
-                    logging.error(f"[TTS FATAL ERROR] AttributeError: {ae}. This strongly suggests your PyTorch version is too old (e.g., < 1.9) for the installed 'transformers' version.")
-                    logging.error("[TTS FATAL ERROR] Please upgrade PyTorch to 1.9+ or align your 'transformers' library version with your PyTorch version.")
-                    raise # Re-raise the error to be caught by the outer try-except in process_text_thread
-                else:
-                    logging.error(f"[TTS FATAL ERROR] AttributeError during model loading: {ae}")
-                    raise # Re-raise other AttributeErrors
-            except Exception as model_load_exc:
-                logging.error(f"[TTS FATAL ERROR] Failed to load or prepare BarkModel: {model_load_exc}", exc_info=True)
-                raise # Re-raise the error
+            adv_cfg = get_advanced_tts_configs_cached(channel_name, db_file)
             
-            # Handle voice preset (built-in vs custom)
-            if voice_preset and voice_preset.startswith('v2/'):
-                # Built-in Bark preset - nothing special needed
-                logging.info(f"Using built-in Bark preset: {voice_preset} for channel {channel_name}") # Keep as info
-                # The preset will be used directly in the processor call
-            else:
-                # Try to load custom voice if available
-                custom_voice_data = load_custom_voice(voice_preset)
-                if custom_voice_data and 'weights' in custom_voice_data:
-                    model.load_state_dict(custom_voice_data['weights'])
-                    logging.info(f"Loaded custom voice: {voice_preset} for channel {channel_name}") # Keep as info
-                else:
-                    # Fall back to default preset if custom voice not found
-                    voice_preset = 'v2/en_speaker_5' # Default preset
-                    logging.info(f"Using fallback voice preset: {voice_preset} for channel {channel_name}") # Keep as info
-
-            # Silence output only during generation to reduce Bark's verbose output
-            with open(os.devnull, 'w') as fnull:
-                with redirect_stdout(fnull), redirect_stderr(fnull):
-                    # Process text in chunks for better performance
-                    all_audio_pieces = []
-                    sentences = sent_tokenize(input_text)
+            if tts_provider in ["chatterbox", "rvc_chatterbox"]:
+                cached_model_data = tts_model_cache.get_model("chatterbox", device)
+                if not cached_model_data:
+                    logging.error(f"[TTS THREAD FATAL ERROR] Failed to load Chatterbox model")
+                    raise RuntimeError(f"Chatterbox model loading failed")
+                model = cached_model_data['model']
+                
+                # Check if voice preset is an actual audio prompt file path
+                cb_kwargs = {
+                    'temperature': adv_cfg['chatterbox_temperature'],
+                    'exaggeration': adv_cfg['chatterbox_exaggeration']
+                }
+                if voice_preset and voice_preset.endswith('.wav'):
+                    # Check straight path first, then voices/ directory
+                    if os.path.exists(voice_preset):
+                        cb_kwargs['audio_prompt_path'] = voice_preset
+                    elif os.path.exists(os.path.join('voices', voice_preset)):
+                        cb_kwargs['audio_prompt_path'] = os.path.abspath(os.path.join('voices', voice_preset))
                     
-                    for sentence in sentences:
-                        pieces = split_sentence(sentence, 165)  # Split long sentences
-                        for piece in pieces:
-                            # Generate speech with the selected voice preset
-                            # Removed padding=True as it caused TypeError with BarkProcessor.
-                            # The processor should handle padding and attention_mask with return_tensors="pt".
-                            inputs = processor(text=piece, voice_preset=voice_preset, return_tensors="pt").to(device)
-                            
-                            # The model.generate call should now use the attention_mask from inputs.
-                            # Explicitly passing pad_token_id can also help, using the model's config.
-                            # Bark's EOS token ID (10000) is often used as pad_token_id for generation.
-                            pad_token_id_for_generation = model.generation_config.pad_token_id or model.generation_config.eos_token_id or 10000
-                            
-                            # Ensure attention_mask is explicitly passed to avoid the warning
-                            attention_mask = inputs.get("attention_mask")
-                            if attention_mask is not None:
-                                audio_array = model.generate(
-                                    inputs.input_ids,
-                                    attention_mask=attention_mask,
-                                    pad_token_id=pad_token_id_for_generation
-                                )
-                            else:
-                                audio_array = model.generate(**inputs, pad_token_id=pad_token_id_for_generation)
-                                
-                            audio_array = audio_array.cpu().numpy().squeeze()
-                            all_audio_pieces.append(audio_array)
+                wav = model.generate(input_text, **cb_kwargs)
+                torchaudio.save(full_path, wav, model.sr)
+                
+                if tts_provider == "rvc_chatterbox":
+                    apply_rvc_conversion(full_path, adv_cfg['rvc_model'], adv_cfg['rvc_pitch'], adv_cfg['rvc_index_rate'])
 
-            # Combine all audio pieces and save
-            final_audio_array = np.concatenate(all_audio_pieces)
-            scipy.io.wavfile.write(full_path, rate=model.generation_config.sample_rate, data=final_audio_array)
+            else:
+                # PERFORMANCE: Get model from cache instead of loading each time
+                cached_model_data = tts_model_cache.get_model(model_path, device)
+                if not cached_model_data:
+                    logging.error(f"[TTS THREAD FATAL ERROR] Failed to load or cache model: {model_path}")
+                    raise RuntimeError(f"Model loading failed: {model_path}")
+                
+                processor = cached_model_data['processor']
+                model = cached_model_data['model']
+    
+                try:
+                    pass  # Model loading is now handled by cache
+                except AttributeError as ae:
+                    if 'get_default_device' in str(ae):
+                        logging.error(f"[TTS FATAL ERROR] AttributeError: {ae}. This strongly suggests your PyTorch version is too old (e.g., < 1.9) for the installed 'transformers' version.")
+                        logging.error("[TTS FATAL ERROR] Please upgrade PyTorch to 1.9+ or align your 'transformers' library version with your PyTorch version.")
+                        raise # Re-raise the error to be caught by the outer try-except in process_text_thread
+                    else:
+                        logging.error(f"[TTS FATAL ERROR] AttributeError during model loading: {ae}")
+                        raise # Re-raise other AttributeErrors
+                except Exception as model_load_exc:
+                    logging.error(f"[TTS FATAL ERROR] Failed to load or prepare BarkModel: {model_load_exc}", exc_info=True)
+                    raise # Re-raise the error
+                
+                # Handle voice preset (built-in vs custom)
+                if voice_preset and voice_preset.startswith('v2/'):
+                    # Built-in Bark preset - nothing special needed
+                    logging.info(f"Using built-in Bark preset: {voice_preset} for channel {channel_name}") # Keep as info
+                    # The preset will be used directly in the processor call
+                else:
+                    # Try to load custom voice if available
+                    custom_voice_data = load_custom_voice(voice_preset)
+                    if custom_voice_data and 'weights' in custom_voice_data:
+                        model.load_state_dict(custom_voice_data['weights'])
+                        logging.info(f"Loaded custom voice: {voice_preset} for channel {channel_name}") # Keep as info
+                    else:
+                        # Fall back to default preset if custom voice not found
+                        voice_preset = 'v2/en_speaker_5' # Default preset
+                        logging.info(f"Using fallback voice preset: {voice_preset} for channel {channel_name}") # Keep as info
+    
+                # We must NOT use global redirect_stdout/stderr as it causes TUI graphical tearing!
+                import transformers
+                transformers.logging.set_verbosity_error()
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    if True:
+                        # Process text in chunks for better performance
+                        all_audio_pieces = []
+                        sentences = sent_tokenize(input_text)
+                        
+                        for sentence in sentences:
+                            pieces = split_sentence(sentence, 165)  # Split long sentences
+                            for piece in pieces:
+                                # Generate speech with the selected voice preset
+                                # Removed padding=True as it caused TypeError with BarkProcessor.
+                                # The processor should handle padding and attention_mask with return_tensors="pt".
+                                inputs = processor(text=piece, voice_preset=voice_preset, return_tensors="pt").to(device)
+                                
+                                # The model.generate call should now use the attention_mask from inputs.
+                                # Explicitly passing pad_token_id can also help, using the model's config.
+                                # Bark's EOS token ID (10000) is often used as pad_token_id for generation.
+                                pad_token_id_for_generation = model.generation_config.pad_token_id or model.generation_config.eos_token_id or 10000
+                                
+                                # Ensure attention_mask is explicitly passed to avoid the warning
+                                attention_mask = inputs.get("attention_mask")
+                                if attention_mask is not None:
+                                    audio_array = model.generate(
+                                        inputs.input_ids,
+                                        attention_mask=attention_mask,
+                                        pad_token_id=pad_token_id_for_generation
+                                    )
+                                else:
+                                    audio_array = model.generate(**inputs, pad_token_id=pad_token_id_for_generation)
+                                    
+                                audio_array = audio_array.cpu().numpy().squeeze()
+                                all_audio_pieces.append(audio_array)
+                                
+                transformers.logging.set_verbosity_warning() # Restore warning logging
+    
+                # Combine all audio pieces and save
+                final_audio_array = np.concatenate(all_audio_pieces)
+                scipy.io.wavfile.write(full_path, rate=model.generation_config.sample_rate, data=final_audio_array)
+
+                if tts_provider in ["rvc", "rvc_chatterbox"]:
+                    apply_rvc_conversion(full_path, adv_cfg['rvc_model'], adv_cfg['rvc_pitch'], adv_cfg['rvc_index_rate'])
             
             # Record in database and notify web interface
             db_file_path_relative = full_path.replace('static/', '', 1)
@@ -393,8 +551,8 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
 
                 db_conn_tts_log = None
                 try:
-                    logging.info(f"[TTS DB LOG] Attempting to log to tts_logs: message_id={message_id}, channel={channel_name}, timestamp={timestamp_for_log}, voice={voice_preset}, path={db_file_path_relative}, text='{str(input_text)[:30]}...'")
-                    db_conn_tts_log = sqlite3.connect(db_file, timeout=10.0) # Added timeout
+                    logging.getLogger('bot').info(f"✅ [bold green]TTS Generation Complete![/bold green] Saved to {db_file_path_relative}", extra={'channel': channel_name})
+                    db_conn_tts_log = thread_safe_db_connect(db_file, timeout=10.0) # Added timeout
                     c = db_conn_tts_log.cursor()
                     
                     c.execute('''INSERT OR IGNORE INTO tts_logs 
@@ -433,9 +591,9 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
                     if db_conn_tts_log:
                         db_conn_tts_log.close()
 
-            # Notify with the message_id (string) so the frontend can query the API correctly
-            if logged_tts_table_id is not None:
-                notify_new_audio_available(channel_name, message_id, full_path, input_text) 
+            # Unconditionally broadcast to OBS overlay regardless of database insertion status
+            active_model = adv_cfg.get('rvc_model', '') if tts_provider in ['rvc', 'rvc_chatterbox'] else voice_preset
+            notify_new_audio_available(channel_name, message_id, full_path, input_text, tts_provider, active_model, author_name) 
             
             # Log status update to be captured by the TUI
             logging.getLogger('bot').info(f"[bright_green]✅ TTS audio ready! ({full_path})[/]")
@@ -451,8 +609,7 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
             # import traceback # exc_info=True handles this
             # traceback.print_exc()
             return None, None # Ensure two values are returned as expected if caller unpacks
-        finally:
-            logging.info(f"[TTS THREAD] Released Bark TTS lock for message_id: {message_id}")
+        
 
 @lru_cache(maxsize=20)
 def load_custom_voice_cached(voice_preset):
@@ -550,80 +707,35 @@ def ensure_nltk_resources():
     return True
 
 async def process_text(channel, text, model_type="bark", voice_preset_override=None): # This is for the !speak command path
-    """Process text to speech with proper locking and error handling"""
-    # Ensure NLTK resources are available
-    ensure_nltk_resources()
-
-    # Use locking to prevent concurrent TTS processing
-    global async_tts_lock # Use the asyncio lock for this async function
-    async with async_tts_lock:
-        try:
-            logging.info(f"Starting ASYNC TTS for channel {channel} (likely !speak command)")
-
-            # Create output directory if it doesn't exist
-            output_dir = f"static/outputs/{channel}"
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Generate unique filename
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            output_file = f"{output_dir}/{channel}-{timestamp}.wav"
-            
-            # Don't write file before processing - wait until after successful generation
-            if model_type == "bark":
-                # Import inside function to avoid loading models unnecessarily
-                from bark import SAMPLE_RATE, generate_audio, preload_models
-                from scipy.io.wavfile import write as write_wav
-                import torch
-                
-                # PYTORCH 2.6 FIX: Monkey-patch torch.load to use weights_only=False for Bark compatibility
-                original_torch_load = torch.load
-                def patched_torch_load(*args, **kwargs):
-                    if 'weights_only' not in kwargs:
-                        kwargs['weights_only'] = False
-                    return original_torch_load(*args, **kwargs)
-                torch.load = patched_torch_load
-                
-                try:
-                    # Make sure models are loaded
-                    preload_models()
-                finally:
-                    # Restore original torch.load function
-                    torch.load = original_torch_load
-                
-                # Determine the voice preset to use
-                actual_voice_preset = voice_preset_override if voice_preset_override else "v2/en_speaker_0"
-                logging.info(f"Using Bark voice preset for !speak: {actual_voice_preset} (Override: {voice_preset_override})")
-                
-                # Generate audio with minimal parameters to avoid API issues
-                # The Bark API might have changed, so we only use params we know are supported
-                audio_array = generate_audio(
-                    text,
-                    history_prompt=actual_voice_preset, # Use the determined preset
-                    text_temp=0.7,
-                    waveform_temp=0.7
-                )
-                
-                # Only write file AFTER successful generation
-                write_wav(output_file, SAMPLE_RATE, audio_array)
-                logging.info(f"TTS audio file generated: {output_file}") # This log indicates successful file generation
-                
-                # Removed the broken internal database logging attempt from here.
-                # Logging is now handled by the caller (e.g., handle_speak_command in bot.py).
-                
-                return True, output_file
-            elif model_type == "elevenlabs":
-                # Handle other TTS providers
-                # ...implementation for elevenlabs...
-                pass
-            else:
-                logging.error(f"Unknown TTS model type: {model_type}")
-                return False, None
-                
-        except Exception as e:
-            logging.error(f"TTS processing error: {str(e)}")
-            import traceback
-            logging.error(traceback.format_exc())
-            return False, None
+    """Process text to speech via unified thread pool"""
+    try:
+        logging.info(f"Starting ASYNC TTS for channel {channel} (likely !speak command) via thread pool")
+        
+        # Create output directory if it doesn't exist
+        output_dir = f"static/outputs/{channel.lstrip('#')}"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Generate unique filename
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output_file = f"{output_dir}/{channel.lstrip('#')}-{timestamp}.wav"
+        
+        loop = asyncio.get_running_loop()
+        global tts_thread_pool
+        
+        # Call the unified synchronous backend. 
+        # Using message_id=None will skip formal DB logging but still generate the file
+        full_path, _ = await loop.run_in_executor(
+            tts_thread_pool, 
+            process_text_thread,
+            text, channel, './messages.db', output_file, timestamp, None, voice_preset_override, None, None
+        )
+        
+        if full_path:
+            return True, full_path
+        return False, None
+    except Exception as e:
+        logging.error(f"TTS processing error: {str(e)}", exc_info=True)
+        return False, None
 
 def split_sentence(sentence, max_length):
     """Split a sentence into smaller parts if it's longer than max_length."""
@@ -655,31 +767,23 @@ def start_tts_processing(input_text, channel_name, db_file='./messages.db', mess
 
     logging.info(f"Preparing TTS thread for bot message. Original message_id: {message_id}, original_timestamp_str: {timestamp_str}, voice_preset_override: {voice_preset_override}, generated_path: {generated_full_path}")
 
-    # Arguments for process_text_thread:
-    # input_text, channel_name, db_file, full_path, timestamp, message_id, voice_preset, bark_model=None
-    tts_thread = threading.Thread(
-        target=process_text_thread, 
-        args=(
-            input_text, 
-            channel_name, 
-            db_file,
-            generated_full_path,      # This becomes 'full_path' in process_text_thread
-            timestamp_str,            # This becomes 'timestamp' (original message timestamp)
-            message_id,               # This becomes 'message_id'
-            voice_preset_override     # This becomes 'voice_preset'
-            # bark_model will be fetched by process_text_thread if None
-        ), 
-        daemon=True
+    global tts_thread_pool
+    logging.getLogger('bot').info(f"[cyan]🎙️ Queuing TTS audio to thread pool... ({voice_preset_override or 'default voice'})[/]")
+    tts_thread_pool.submit(
+        process_text_thread, 
+        input_text, 
+        channel_name, 
+        db_file,
+        generated_full_path,
+        timestamp_str,
+        message_id,
+        voice_preset_override
     )
-    
-    logging.getLogger('bot').info(f"[cyan]🎙️ Generating TTS audio... ({voice_preset_override or 'default voice'})[/]")
-    tts_thread.start()
-    # Logging that the thread has been dispatched. The thread itself will log its entry.
     # logging.info(f"TTS processing thread dispatched for original message_id {message_id} in channel {channel_name}.")
 
-def notify_new_audio_available(channel_name, message_id, full_path, text=""):
+def notify_new_audio_available(channel_name, message_id, full_path, text="", provider="", voice="", author=""):
     from bot.overlay import broadcast_audio
-    broadcast_audio(channel_name, full_path, text)
+    broadcast_audio(channel_name, full_path, text, provider, voice, author)
 
 def clear_tts_queue():
     """Immediately attempt to kill TTS tasks and notify overlays."""

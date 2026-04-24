@@ -26,202 +26,125 @@ async def serve_overlay(request):
         <title>Mockbot TTS - {channel}</title>
         <style>
             body {{
-                margin: 0;
-                padding: 20px;
-                font-family: -apple-system, BlinkMacMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                background-color: #0f172a; /* Slate 900 */
-                color: #f8fafc; /* Slate 50 */
-                display: flex;
-                flex-direction: column;
-                gap: 16px;
-                align-items: center;
+                margin: 0; padding: 20px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                color: #f8fafc;
+                display: flex; flex-direction: column; gap: 16px; align-items: flex-start;
+                background: transparent; /* Essential for OBS transparent background */
             }}
-            .widget-container {{
-                background: #1e293b; /* Slate 800 */
+            .main-hud {{
+                background: rgba(15, 23, 42, 0.85);
+                backdrop-filter: blur(10px);
                 border-radius: 12px;
-                padding: 20px 24px;
-                display: flex;
-                flex-direction: column;
-                gap: 16px;
-                box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+                padding: 16px 20px;
+                box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
                 width: 100%;
-                max-width: 400px;
-            }}
-            .top-bar {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }}
-            .left-section {{
+                max-width: 450px;
                 display: flex;
                 flex-direction: column;
-                gap: 4px;
+                gap: 12px;
+                border: 1px solid rgba(51, 65, 85, 0.5);
+                transition: opacity 0.5s ease-in-out, transform 0.5s ease-in-out;
+                opacity: 0;
+                transform: translateY(20px);
             }}
-            .title-row {{
-                display: flex;
-                align-items: center;
-                gap: 8px;
+            .main-hud.active {{
+                opacity: 1;
+                transform: translateY(0);
             }}
-            .status-dot {{
-                width: 10px;
-                height: 10px;
-                border-radius: 50%;
-                background-color: #ef4444; /* Red 500 - Disconnected */
-                transition: background-color 0.3s;
+            .hud-header {{
+                display: flex; justify-content: space-between; align-items: center;
+                border-bottom: 1px solid rgba(71, 85, 105, 0.5);
+                padding-bottom: 8px;
             }}
-            .status-dot.connected {{
-                background-color: #22c55e; /* Green 500 */
-            }}
-            .title {{
-                font-size: 1.1rem;
-                font-weight: 600;
-            }}
-            .subtitle {{
-                font-size: 0.85rem;
-                color: #94a3b8; /* Slate 400 */
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            }}
+            .hud-title {{ font-size: 0.9rem; font-weight: 600; color: #94a3b8; display: flex; align-items: center; gap: 8px; }}
+            .status-dot {{ width: 8px; height: 8px; border-radius: 50%; background-color: #ef4444; }}
+            .status-dot.connected {{ background-color: #22c55e; }}
             
             /* Visualizer */
-            .visualizer {{
-                display: none;
-                align-items: center;
-                gap: 3px;
-                height: 14px;
-            }}
-            .visualizer.playing {{
-                display: flex;
-            }}
-            .bar {{
-                width: 3px;
-                background-color: #38bdf8; /* Sky 400 */
-                border-radius: 2px;
-                animation: bounce 0.5s ease infinite alternate;
-            }}
+            .visualizer {{ display: flex; align-items: center; gap: 3px; height: 14px; opacity: 0; transition: opacity 0.2s; }}
+            .visualizer.playing {{ opacity: 1; }}
+            .bar {{ width: 3px; background-color: #38bdf8; border-radius: 2px; animation: bounce 0.5s ease infinite alternate; }}
             .bar:nth-child(1) {{ height: 60%; animation-delay: 0.0s; }}
             .bar:nth-child(2) {{ height: 100%; animation-delay: 0.1s; background-color: #818cf8; }}
             .bar:nth-child(3) {{ height: 80%; animation-delay: 0.2s; }}
             .bar:nth-child(4) {{ height: 40%; animation-delay: 0.3s; background-color: #818cf8; }}
-            
-            @keyframes bounce {{
-                from {{ transform: scaleY(0.5); }}
-                to {{ transform: scaleY(1.0); }}
-            }}
-            
-            /* Toggle Switch */
-            .switch {{
-                position: relative;
-                display: inline-block;
-                width: 44px;
-                height: 24px;
-            }}
-            .switch input {{
-                opacity: 0;
-                width: 0;
-                height: 0;
-            }}
-            .slider {{
-                position: absolute;
-                cursor: pointer;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background-color: #475569;
-                transition: .4s;
-                border-radius: 24px;
-            }}
-            .slider:before {{
-                position: absolute;
-                content: "";
-                height: 18px;
-                width: 18px;
-                left: 3px;
-                bottom: 3px;
-                background-color: white;
-                transition: .3s;
-                border-radius: 50%;
-            }}
-            input:checked + .slider {{
-                background-color: #6366f1;
-            }}
-            input:checked + .slider:before {{
-                transform: translateX(20px);
-            }}
+            @keyframes bounce {{ from {{ transform: scaleY(0.4); }} to {{ transform: scaleY(1.0); }} }}
 
-            /* Transcript Area */
-            .transcript-area {{
-                background: #0f172a;
-                border-radius: 8px;
-                padding: 12px;
-                font-size: 0.95rem;
-                color: #cbd5e1;
-                min-height: 40px;
-                border: 1px solid #334155;
-            }}
-
-            /* Variables Area */
-            .variables-area {{
-                background: #0f172a;
-                border-radius: 8px;
-                padding: 12px;
-                font-size: 0.95rem;
-                color: #f8fafc;
-                border: 1px solid #334155;
+            /* Chat Container */
+            .chat-container {{
                 display: flex;
-                flex-wrap: wrap;
-                gap: 8px;
-                min-height: 20px;
+                flex-direction: column;
+                gap: 12px;
             }}
-            .var-badge {{
-                background: #334155;
-                padding: 4px 10px;
-                border-radius: 12px;
+            .message-bubble {{
+                background: rgba(30, 41, 59, 0.8);
+                border-radius: 8px;
+                padding: 12px;
+                transition: all 0.4s ease;
+                border-left: 3px solid #6366f1;
+            }}
+            .message-bubble.new {{
+                opacity: 0;
+                transform: translateX(-10px);
+            }}
+            .message-bubble.fade-out {{
+                opacity: 0;
+                transform: scale(0.95);
+            }}
+            .msg-header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 6px;
+            }}
+            .msg-author {{
+                font-size: 0.95rem;
+                font-weight: 700;
+                color: #e2e8f0;
+            }}
+            .msg-badges {{
+                display: flex;
+                gap: 6px;
+            }}
+            .badge-provider {{
+                background: #312e81; /* Indigo 900 */
+                color: #a5b4fc; /* Indigo 300 */
+                font-size: 0.7rem;
+                padding: 2px 6px;
+                border-radius: 4px;
                 font-weight: 600;
-                font-size: 0.85rem;
-                box-shadow: 0 1px 2px rgba(0,0,0,0.2);
-            }}
-            .var-name {{
-                color: #94a3b8;
-                margin-right: 6px;
                 text-transform: uppercase;
-                font-size: 0.75rem;
+            }}
+            .badge-voice {{
+                background: #0f766e; /* Teal 700 */
+                color: #5eead4; /* Teal 300 */
+                font-size: 0.7rem;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-weight: 600;
+            }}
+            .msg-text {{
+                font-size: 1.05rem;
+                line-height: 1.4;
+                color: #f1f5f9;
             }}
         </style>
     </head>
     <body>
-        <div class="widget-container" id="widgetContainer">
-            <div class="top-bar">
-                <div class="left-section">
-                    <div class="title-row">
-                        <div class="status-dot" id="statusDot"></div>
-                        <div class="title">Mockbot TTS Output</div>
-                    </div>
-                    <div class="subtitle">
-                        <span id="statusText">Connecting...</span>
-                        <div class="visualizer" id="visualizer">
-                            <div class="bar"></div>
-                            <div class="bar"></div>
-                            <div class="bar"></div>
-                            <div class="bar"></div>
-                        </div>
-                    </div>
+        <div class="main-hud" id="hud">
+            <div class="hud-header">
+                <div class="hud-title">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span>TTS Broadcast ({channel})</span>
                 </div>
-                
-                <label class="switch" title="Toggle Auto-TTS Playback">
-                    <input type="checkbox" id="ttsToggle" checked>
-                    <span class="slider"></span>
-                </label>
+                <div class="visualizer" id="visualizer">
+                    <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                </div>
             </div>
             
-            <div class="transcript-area" id="transcriptArea">
-                Waiting for messages...
-            </div>
-
-            <div class="variables-area" id="variablesArea" style="display: none;">
-                <!-- Variables injected here via API -->
+            <div class="chat-container" id="chatContainer">
+                <!-- Messages spawn here -->
             </div>
         </div>
 
@@ -230,130 +153,100 @@ async def serve_overlay(request):
         <script>
             let ws;
             const player = document.getElementById('ttsAudioPlayer');
-            const statusDot = document.getElementById('statusDot');
-            const statusText = document.getElementById('statusText');
-            const ttsToggle = document.getElementById('ttsToggle');
+            const hud = document.getElementById('hud');
+            const chatContainer = document.getElementById('chatContainer');
             const visualizer = document.getElementById('visualizer');
-            const transcriptArea = document.getElementById('transcriptArea');
-            const variablesArea = document.getElementById('variablesArea');
+            const statusDot = document.getElementById('statusDot');
             
-            let typingInterval = null;
-
-            async function fetchVariables() {{
-                try {{
-                    const response = await fetch(`/api/variables/{channel}`);
-                    if (!response.ok) return;
-                    
-                    const data = await response.json();
-                    const keys = Object.keys(data);
-                    
-                    if (keys.length === 0) {{
-                        variablesArea.style.display = 'none';
-                        return;
-                    }}
-                    
-                    let html = '';
-                    for (const key of keys) {{
-                        html += `<div class="var-badge"><span class="var-name">${{key}}</span>${{data[key]}}</div>`;
-                    }}
-                    
-                    variablesArea.innerHTML = html;
-                    variablesArea.style.display = 'flex';
-                }} catch (e) {{
-                    // Fail silently to avoid spamming console
-                }}
-            }}
-
-            // Refresh variables every 5 seconds
-            setInterval(fetchVariables, 5000);
-            fetchVariables();
+            let hideHudTimeout = null;
 
             player.onplay = () => {{
                 visualizer.classList.add('playing');
-                statusText.innerText = "Playing audio...";
+                if(hideHudTimeout) clearTimeout(hideHudTimeout);
             }};
             
             player.onended = () => {{
                 visualizer.classList.remove('playing');
-                statusText.innerText = "Ready ({channel})";
+                resetHudTimeout();
             }};
             
-            function typeString(str, speed=30) {{
-                transcriptArea.innerHTML = '';
-                if(typingInterval) clearInterval(typingInterval);
-                
-                let i = 0;
-                typingInterval = setInterval(() => {{
-                    if (i < str.length) {{
-                        transcriptArea.innerHTML += str.charAt(i);
-                        i++;
-                    }} else {{
-                        clearInterval(typingInterval);
+            function resetHudTimeout() {{
+                if(hideHudTimeout) clearTimeout(hideHudTimeout);
+                hideHudTimeout = setTimeout(() => {{
+                    if (player.paused && chatContainer.children.length === 0) {{
+                        hud.classList.remove('active');
                     }}
-                }}, speed);
+                }}, 10000); // Sleep HUD after 10s idle
+            }}
+
+            function appendMessage(text, author, provider, voice) {{
+                // Wake up HUD
+                hud.classList.add('active');
+                if(hideHudTimeout) clearTimeout(hideHudTimeout);
+                
+                const msgDiv = document.createElement('div');
+                msgDiv.className = 'message-bubble new';
+                
+                let headerHtml = `<div class="msg-header">`;
+                headerHtml += `<div class="msg-author">${{author || 'Anonymous'}}</div>`;
+                headerHtml += `<div class="msg-badges">`;
+                if(provider) headerHtml += `<span class="badge-provider">${{provider}}</span>`;
+                if(voice) headerHtml += `<span class="badge-voice">${{voice}}</span>`;
+                headerHtml += `</div></div>`;
+                
+                msgDiv.innerHTML = headerHtml + `<div class="msg-text">${{text}}</div>`;
+                chatContainer.appendChild(msgDiv);
+                
+                // Trigger CSS transition
+                requestAnimationFrame(() => {{
+                    msgDiv.classList.remove('new');
+                }});
+                
+                // Enforce max 3 messages
+                while (chatContainer.children.length > 3) {{
+                    chatContainer.removeChild(chatContainer.firstChild);
+                }}
+                
+                // Auto-delete message bubble after 15 seconds
+                setTimeout(() => {{
+                    msgDiv.classList.add('fade-out');
+                    setTimeout(() => {{
+                        if (msgDiv.parentElement) msgDiv.remove();
+                        resetHudTimeout(); // Check if HUD should sleep
+                    }}, 400);
+                }}, 15000);
             }}
 
             function connect() {{
-                const wsUrl = `ws://${{window.location.host}}/ws/{channel}`;
-                ws = new WebSocket(wsUrl);
-                
+                ws = new WebSocket(`ws://${{window.location.host}}/ws/{channel}`);
                 ws.onopen = () => {{
-                    console.log("Connected to Mockbot TTS Overlay websocket.");
                     statusDot.classList.add('connected');
-                    statusText.innerText = "Ready ({channel})";
+                    appendMessage("OBS Overlay Connected and Listening...", "SYSTEM", "MOCKBOT", "");
+                }};
+                ws.onclose = () => {{
+                    statusDot.classList.remove('connected');
+                    setTimeout(connect, 3000);
                 }};
                 
                 ws.onmessage = (event) => {{
                     try {{
                         const data = JSON.parse(event.data);
-                        
                         if (data.action === 'kill_audio') {{
-                            console.log("Killing audio playback.");
-                            player.pause();
-                            player.src = '';
+                            player.pause(); player.src = '';
                             visualizer.classList.remove('playing');
-                            statusText.innerText = "Ready (Killed)";
-                            transcriptArea.innerHTML = '<< AUDIO KILLED >>';
-                            return;
+                            chatContainer.innerHTML = ''; 
+                            resetHudTimeout();
                         }}
                         
                         if (data.action === 'play_audio' && data.file) {{
-                            if (ttsToggle.checked) {{
-                                console.log("Playing audio:", data.file);
-                                
-                                if(data.message) {{
-                                    typeString(data.message);
-                                }} else {{
-                                    typeString("<< AUDIO TRANSMISSION RECEIVED >>");
-                                }}
-                                
-                                player.src = data.file;
-                                player.play().catch(e => {{
-                                    console.error("Error expected if no user interaction:", e);
-                                    statusText.innerText = "Browser blocked autoplay";
-                                }});
-                            }} else {{
-                                console.log("Audio received but toggle is off.");
-                            }}
+                            appendMessage(data.message || '🎙️ << audio transmission >>', data.author, data.provider, data.voice);
+                            player.src = data.file;
+                            player.play().catch(e => console.error("Autoplay blocked:", e));
                         }}
-                    }} catch (e) {{
-                        console.error("Error parsing websocket message:", e);
-                    }}
-                }};
-                
-                ws.onclose = () => {{
-                    console.log("Websocket disconnected. Reconnecting in 3s...");
-                    statusDot.classList.remove('connected');
-                    statusText.innerText = "Reconnecting...";
-                    setTimeout(connect, 3000);
-                }};
-                
-                ws.onerror = (error) => {{
-                    console.error("Websocket error:", error);
+                    }} catch (e) {{ console.error("WS parse error:", e); }}
                 }};
             }}
             
-            // Connect immediately
             connect();
         </script>
     </body>
@@ -388,7 +281,7 @@ async def websocket_handler(request):
 
     return ws
 
-def broadcast_audio(channel: str, file_path: str, message: str = ""):
+def broadcast_audio(channel: str, file_path: str, message: str = "", provider: str = "", voice: str = "", author: str = ""):
     """
     Called by the TTS thread to notify all connected overlays to play a file.
     Note: Can be called from a synchronous thread, so we schedule the async broadcast.
@@ -409,7 +302,10 @@ def broadcast_audio(channel: str, file_path: str, message: str = ""):
     payload = json.dumps({
         "action": "play_audio",
         "file": audio_url,
-        "message": message
+        "message": message,
+        "provider": provider,
+        "voice": voice,
+        "author": author
     })
 
     if clean_channel in connected_clients and main_loop is not None:

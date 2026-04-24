@@ -61,6 +61,7 @@ def main():
         parser.add_argument("--rebuild-cache", action="store_true", help="Rebuild markov models")
         parser.add_argument("--tts", action="store_true", help="Enable TTS functionality")
         parser.add_argument("--voice-preset", dest="voice_preset", type=str, help="Set default voice preset for TTS")
+        parser.add_argument("--rvc-url", dest="rvc_url", type=str, help="Set the background server wrapper endpoint for mockbot cloning")
         args = parser.parse_args()
 
         # print(f"Arguments parsed: {args}")
@@ -70,6 +71,10 @@ def main():
         if args.voice_preset:
             os.environ["DEFAULT_VOICE_PRESET"] = args.voice_preset
             print(f"Set default voice preset via environment: {args.voice_preset}")
+            
+        if args.rvc_url:
+            os.environ["RVC_API_URL"] = args.rvc_url
+            print(f"Set remote cloning endpoint via environment: {args.rvc_url}")
 
         from bot.setup_wizard import needs_setup, run_setup_wizard
         if needs_setup():
@@ -100,6 +105,11 @@ def main():
         import requests
         config = configparser.ConfigParser()
         config.read('settings.conf')
+        # Load TTS defaults from configuration file into environment
+        if config.has_section('tts'):
+            if config.has_option('tts', 'rvc_api_url') and "RVC_API_URL" not in os.environ:
+                os.environ["RVC_API_URL"] = config.get('tts', 'rvc_api_url')
+
         token = config.get('auth', 'tmi_token', fallback='').replace('oauth:', '')
         
         if token:

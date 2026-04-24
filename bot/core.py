@@ -315,7 +315,7 @@ class Bot(commands.Bot):
         self.live_streamers = set()
         self.live_stream_monitor_task = self.loop.create_task(self.live_stream_monitor_loop())
         
-    async def send_message_to_channel(self, channel_name, message):
+    async def send_message_to_channel(self, channel_name, message, log_to_tui=False):
         """Send a message to a specific channel."""
         channel_name = channel_name.lower()
         # Check if channel starts with # (required for Twitch)
@@ -332,6 +332,11 @@ class Bot(commands.Bot):
         if channel:
             await channel.send(message)
             self.logger.info(f"Message sent to {channel_name}: {message}")
+            if log_to_tui:
+                try:
+                    self.my_logger.log_message(channel.name, self.nick, message, is_bot_message=True)
+                except Exception:
+                    pass
             return True
         else:
             self.logger.info(f"Failed to find channel {channel_name}")
@@ -747,7 +752,7 @@ class Bot(commands.Bot):
                                 json_str = f.read()
                             import markovify
                             import json
-                            model = markovify.Text.from_json(json_str)
+                            model = markovify.NewlineText.from_json(json_str)
                             
                             state_size = model.state_size
                             num_parsed_sentences = len(model.parsed_sentences) if model.parsed_sentences else 0
@@ -869,7 +874,49 @@ class Bot(commands.Bot):
         except Exception as e:
             self.my_logger.print_message(f"Error printing brain status: {e}")
 
+    def compile_lore_caches(self):
+        """Pre-compiles .txt files from the lore/ folder into markovify JSON caches."""
+        import os
+        import markovify
+        
+        lore_dir = "lore/"
+        cache_dir = "cache/"
+        if not os.path.exists(lore_dir):
+            os.makedirs(lore_dir)
+            return
+
+
+        for filename in os.listdir(lore_dir):
+            if filename.endswith(".txt"):
+                txt_path = os.path.join(lore_dir, filename)
+                cache_path = os.path.join(cache_dir, f"lore_{filename}_model.json")
+                
+                # Check if cache needs updating (if lore txt is newer than cache)
+                needs_update = True
+                if os.path.exists(cache_path):
+                    txt_mtime = os.path.getmtime(txt_path)
+                    cache_mtime = os.path.getmtime(cache_path)
+                    if cache_mtime > txt_mtime:
+                        needs_update = False
+                
+                if needs_update or getattr(self, 'rebuild_cache', False):
+                    try:
+                        with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
+                            text = f.read()
+                        if text.strip():
+                            # Remove hex addresses commonly found in game text dumps like 0x1d2d9b8:
+                            import re
+                            text = re.sub(r'0x[0-9a-fA-F]+:\s*', '', text)
+                            
+                            lore_model = markovify.NewlineText(text)
+                            with open(cache_path, "w") as cf:
+                                cf.write(lore_model.to_json())
+                            self.my_logger.print_message(f"Compiled lore model for {filename}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to compile lore {filename}: {e}")
+
     def load_text_and_build_model(self, create_individual_caches=False, target_channel=None):
+        self.compile_lore_caches()
         cache_directory = "cache/"
         if not os.path.exists(cache_directory):
             os.makedirs(cache_directory)
@@ -909,18 +956,46 @@ class Bot(commands.Bot):
         valid_channels = set(row[0] for row in c.fetchall())
 
         # Grab all non-bot messages ordered by channel
-        c.execute("SELECT channel, message FROM messages WHERE is_bot_response = 0 ORDER BY channel")
+        c.execute("SELECT channel, message, author_name FROM messages WHERE is_bot_response = 0 ORDER BY channel")
         rows = c.fetchall()
 
-        # Group messages by channel
+        # Group messages by channel and generate user stats
         channel_messages = {}
+        user_stats = {}
+        
         for row in rows:
-            channel, msg = row
+            # Handle standard unpacking based on length
+            if len(row) == 3:
+                channel, msg, author = row
+            else:
+                channel, msg = row[0], row[1]
+                author = None
+                
+            if author:
+                author_lower = author.lower()
+                if author_lower not in user_stats:
+                    user_stats[author_lower] = {
+                        'messages': 0,
+                        'chars': 0,
+                        'words': 0
+                    }
+                user_stats[author_lower]['messages'] += 1
+                user_stats[author_lower]['chars'] += len(msg)
+                user_stats[author_lower]['words'] += len(msg.split())
+                
             if channel:
                 channel_name = channel.lstrip('#')
                 if channel_name not in channel_messages:
                     channel_messages[channel_name] = []
                 channel_messages[channel_name].append(msg)
+                
+        # Save user stats to model cache
+        try:
+            import json
+            with open(os.path.join(cache_directory, "user_model_stats.json"), 'w') as f:
+                json.dump(user_stats, f)
+        except Exception as e:
+            self.logger.error(f"Failed to save user model stats to cache: {e}")
                 
         for channel_name, msgs in channel_messages.items():
             if not msgs: continue
@@ -947,7 +1022,7 @@ class Bot(commands.Bot):
             ])
 
         if self.text:
-            self.general_model = markovify.Text(self.text)
+            self.general_model = markovify.NewlineText(self.text)
             
             should_compile_general = True
             if target_channel and target_channel != "Global":
@@ -989,7 +1064,7 @@ class Bot(commands.Bot):
         conn.close()
 
         if channel_name in valid_channels and create_individual_caches:
-            channel_model = markovify.Text(file_text)
+            channel_model = markovify.NewlineText(file_text)
             self.models[channel_name] = channel_model
             
             # Check if the cache file needs to be updated
@@ -1016,7 +1091,7 @@ class Bot(commands.Bot):
         try:
             chan_color = self.my_logger.color_manager.get_channel_color(channel_name)
             self.my_logger.print_message(f"Compiling individual brain model for [{chan_color}]#{channel_name}[/]...")
-            channel_model = markovify.Text(file_text)
+            channel_model = markovify.NewlineText(file_text)
             self.models[channel_name] = channel_model
             
             # Check if we should update cache
@@ -1049,7 +1124,44 @@ class Bot(commands.Bot):
         try:
             with open(cache_file_path, "r") as f:
                 model_json = f.read()
-                return markovify.Text.from_json(model_json)
+                channel_model = markovify.NewlineText.from_json(model_json)
+                
+            # Check for lore configs
+            enabled_lore_str = ""
+            lore_bias = 15.0
+            try:
+                conn = sqlite3.connect(self.db_file)
+                c = conn.cursor()
+                c.execute("SELECT enabled_lore, lore_bias FROM channel_configs WHERE channel_name = ?", (channel_name,))
+                row = c.fetchone()
+                if row:
+                    if row[0]: enabled_lore_str = row[0]
+                    if len(row) > 1 and row[1] is not None: lore_bias = float(row[1])
+                conn.close()
+            except Exception as e:
+                self.logger.error(f"Error fetching enabled_lore: {e}")
+                
+            if not enabled_lore_str:
+                return channel_model
+                
+            # Combine lore
+            lores = [l.strip() for l in enabled_lore_str.split(",") if l.strip()]
+            models_to_combine = [channel_model]
+            weights = [lore_bias] # Configurable channel base multiplier
+            
+            for lore_file in lores:
+                lore_cache_path = os.path.join("cache", f"lore_{lore_file}_model.json")
+                if os.path.exists(lore_cache_path):
+                    with open(lore_cache_path, "r") as f:
+                        lore_json = f.read()
+                        lore_model = markovify.NewlineText.from_json(lore_json)
+                        models_to_combine.append(lore_model)
+                        weights.append(1.0)
+                        
+            if len(models_to_combine) > 1:
+                return markovify.combine(models_to_combine, weights)
+            return channel_model
+            
         except FileNotFoundError:
             return None
 
@@ -2391,17 +2503,17 @@ class Bot(commands.Bot):
                                 else:
                                     self.logger.warning(f"TTS generation failed for {channel_name}. Queuing message anyway.")
                                 
-                                await self.handle_message_request(channel_name, response)
+                                await self.send_message_to_channel(channel_name, response, log_to_tui=True)
 
                             except Exception as e:
                                 self.logger.error(f"Error in TTS delay mode for {channel_name}: {e}")
                                 # Fallback: queue message even if TTS failed
-                                await self.handle_message_request(channel_name, response)
+                                await self.send_message_to_channel(channel_name, response, log_to_tui=True)
 
                         # NORMAL MODE: Queue message immediately, then generate TTS
                         else:
                             # Queue the response immediately
-                            await self.handle_message_request(channel_name, response)
+                            await self.send_message_to_channel(channel_name, response, log_to_tui=True)
 
                             # Generate TTS asynchronously after message is sent
                             if self.enable_tts and tts_enabled:
@@ -2836,7 +2948,21 @@ class Bot(commands.Bot):
                 # Note: We're using the import here to ensure we're calling the right function
                 # The signature for async def process_text(channel, text, model_type="bark", voice_preset_override=None) in utils/tts.py
                 self.logger.info(f"Calling process_text for !speak command. Channel: {channel}, Text: '{message_to_speak[:30]}...', Voice: {voice_preset_for_speak}")
-                success, audio_file = await process_text(channel, message_to_speak, voice_preset_override=voice_preset_for_speak)
+                
+                import asyncio
+                def _speak_blocking_wrapper():
+                    from bot.tts import process_text_thread
+                    import uuid, os
+                    from datetime import datetime
+                    msg_id = "speak_" + str(uuid.uuid4())[:8]
+                    out_dir = f"static/outputs/{channel}"
+                    os.makedirs(out_dir, exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    f_path = f"{out_dir}/{channel}_{msg_id}_{ts}.wav"
+                    audio_file, tts_id = process_text_thread(message_to_speak, channel, full_path=f_path, message_id=msg_id, voice_preset=voice_preset_for_speak, author_name=author_name)
+                    return audio_file is not None, audio_file
+                
+                success, audio_file = await asyncio.to_thread(_speak_blocking_wrapper)
             except Exception as tts_error:
                 self.logger.error(f"Error calling or during TTS generation via process_text for !speak: {tts_error}", exc_info=True)
                 success, audio_file = False, None
@@ -2850,6 +2976,19 @@ class Bot(commands.Bot):
                 web_path = audio_file 
                 if not web_path.startswith('static/'): # Ensure it's a web path if not already
                     web_path = f"static/{web_path.lstrip('/')}"
+                
+                if hasattr(self, 'socketio_emitter') and self.socketio_emitter:
+                    try:
+                        self.socketio_emitter({
+                            'event': 'new_tts_entry',
+                            'channel': channel,
+                            'message_id': getattr(getattr(ctx, 'message', None), 'id', 'unknown'),
+                            'tts_url': web_path,
+                            'voice': voice_preset_for_speak,
+                            'text': message_to_speak
+                        })
+                    except Exception as e:
+                        self.logger.error(f"Failed to emit new_tts_entry event: {e}")
                 
                 self.logger.info(f"[HANDLE_SPEAK_COMMAND_TRACE] Sending message to Twitch: Speaking: {message_to_speak[:50]}... (Audio: {web_path})")
                 await ctx.send(f"Speaking: {message_to_speak[:50]}... (Audio: {web_path})")
@@ -2903,6 +3042,38 @@ class Bot(commands.Bot):
         except Exception as e:
             self.logger.error(f"Error in speak command: {e}")
             await ctx.send(f"Error: {str(e)}")
+
+    @commands.command(name="mystats", aliases=["stats", "mystat"])
+    async def my_stats_command(self, ctx):
+        """Displays fun stats about the user's contributions to the markov chain corpus."""
+        try:
+            author = ctx.author.name.lower()
+            
+            cache_file = os.path.join("cache", "user_model_stats.json")
+            if not os.path.exists(cache_file):
+                await ctx.send("The model cache hasn't compiled user stats yet! Please wait for the next brain rebuild.")
+                return
+                
+            with open(cache_file, 'r') as f:
+                import json
+                user_stats = json.load(f)
+                
+            stats = user_stats.get(author)
+            if not stats:
+                await ctx.send(f"@{ctx.author.name}, I haven't seen any messages from you in my training data yet! Speak up to feed the brain.")
+                return
+                
+            total_messages = stats.get('messages', 0)
+            total_chars = stats.get('chars', 0)
+            total_words = stats.get('words', 0)
+            
+            avg_len = total_chars // total_messages if total_messages > 0 else 0
+                
+            stats_msg = f"@{ctx.author.name}'s Brain Node Stats 🧠: You've seeded the Markov Chain with {total_messages:,} messages, {total_words:,} words, and {total_chars:,} characters! Avg message length: {avg_len} chars."
+            await ctx.send(stats_msg)
+        except Exception as e:
+            self.logger.error(f"Error in mystats command: {e}")
+            await ctx.send("Oops, something went wrong fetching your stats from the model cache.")
 
 
 

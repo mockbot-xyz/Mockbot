@@ -87,3 +87,7 @@ site/
 colors.json
 badwords.txt
 *.code-workspace
+
+# Third-party Voice Engines
+Applio/
+app.log.*

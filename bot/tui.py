@@ -4,11 +4,11 @@ import time
 import os
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Input, RichLog, Static, ListView, ListItem, Label, Button, TextArea, Sparkline
-from textual.containers import Container, Horizontal, VerticalScroll
+from textual.containers import Container, Horizontal, VerticalScroll, Vertical
 from textual import work
 from datetime import datetime
 from textual.events import Key, Resize
-from bot.ui_managers import CommandsManagerScreen, GrammarManagerScreen, SettingsManagerScreen, TimersManagerScreen
+from bot.ui_managers import CommandsManagerScreen, GrammarManagerScreen, SettingsManagerScreen, TimersManagerScreen, TTSHistoryScreen
 
 MAX_BUFFER = 500  # Maximum messages to keep per channel buffer
 
@@ -118,11 +118,16 @@ class MockbotDashboard(App):
         background: transparent;
     }
     
-    #status_bar {
+    #top_bar {
         dock: top;
+        height: auto;
+        width: 100%;
+        background: $boost;
+    }
+    
+    #status_bar {
         width: 100%;
         padding: 0 1;
-        background: $boost;
         color: $text-muted;
         text-style: bold;
     }
@@ -134,24 +139,11 @@ class MockbotDashboard(App):
     }
     
     #sys_monitor {
-        dock: top;
         height: 1;
         width: 100%;
-        background: $boost;
         color: $text-muted;
         padding: 0 1;
-        layout: horizontal;
-    }
-    
-    #sys_monitor > Static {
         text-style: bold;
-        margin-right: 1;
-    }
-    
-    #sys_monitor > Sparkline {
-        width: 15;
-        margin-right: 4;
-        height: 1;
     }
     
     RichLog {
@@ -268,7 +260,7 @@ class MockbotDashboard(App):
     SettingRow {
         layout: horizontal;
         height: auto;
-        padding: 1;
+        padding: 0 1;
         border-bottom: solid $primary-background;
     }
     
@@ -287,6 +279,14 @@ class MockbotDashboard(App):
         height: auto;
     }
     
+    .setting-category {
+        text-style: bold;
+        color: $primary;
+        width: 100%;
+        content-align: center middle;
+        padding: 1 0 0 0;
+    }
+    
     .setting-controls {
         width: 2fr;
         height: auto;
@@ -295,7 +295,7 @@ class MockbotDashboard(App):
     }
     
     .setting-controls > Input, .setting-controls > Select {
-        width: 15;
+        width: 28;
         margin-right: 1;
     }
     
@@ -363,6 +363,19 @@ class MockbotDashboard(App):
         padding: 0 1;
     }
 
+    #tts_table {
+        height: 1fr;
+        padding: 0 1;
+        margin-bottom: 1;
+    }
+    
+    .tts-preview {
+        height: 6;
+        border: solid $primary;
+        margin: 0 1 1 1;
+        background: $surface-lighten-1;
+    }
+
     ModalScreen {
         align: center middle;
         background: $background 80%;
@@ -384,7 +397,8 @@ class MockbotDashboard(App):
         ("f3", "manage_grammar", "Grammar"),
         ("f4", "manage_timers", "Timers"),
         ("f5", "toggle_events", "Events (F5)"),
-        ("f6", "kill_tts", "Kill TTS")
+        ("f6", "kill_tts", "Kill TTS"),
+        ("f7", "manage_tts_history", "TTS History")
     ]
 
     def __init__(self, bot=None):
@@ -400,12 +414,16 @@ class MockbotDashboard(App):
         
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
-        yield Static("🔌 [bold]Mockbot[/bold] | Global Context", id="status_bar")
-        with Horizontal(id="sys_monitor"):
-            yield Static("CPU:")
-            yield Sparkline(data=list(self.cpu_history), summary_function=max, id="cpu_spark")
-            yield Static("RAM:")
-            yield Sparkline(data=list(self.ram_history), summary_function=max, id="ram_spark")
+        with Vertical(id="top_bar"):
+            yield Static("🔌 [bold]Mockbot[/bold] | Global Context", id="status_bar")
+            yield Static("CPU: 0.0% | RAM: 0.0%", id="sys_monitor")
+            
+        yield Footer()
+        yield ListView(id="channel_sidebar")
+        
+        with Horizontal(id="input_container"):
+            yield Static("mockbot >", id="input_prefix")
+            yield CommandInput(id="command_input")
             
         with Container(id="log_container"):
             self.log_widget = RichLog(highlight=False, markup=True, wrap=True, id="main_log")
@@ -413,10 +431,6 @@ class MockbotDashboard(App):
             self.event_log_widget.add_class("hidden")
             yield self.log_widget
             yield self.event_log_widget
-        with Horizontal(id="input_container"):
-            yield Static("mockbot >", id="input_prefix")
-            yield CommandInput(id="command_input")
-        yield ListView(id="channel_sidebar")
 
     def on_mount(self) -> None:
         """Called when app starts."""
@@ -561,8 +575,7 @@ class MockbotDashboard(App):
             self.ram_history.append(0.0)
             
         try:
-            self.query_one("#cpu_spark", Sparkline).data = list(self.cpu_history)
-            self.query_one("#ram_spark", Sparkline).data = list(self.ram_history)
+            self.query_one("#sys_monitor").update(f"CPU: {self.cpu_history[-1]:.1f}% | RAM: {self.ram_history[-1]:.1f}%")
         except Exception:
             pass
 
@@ -589,6 +602,9 @@ class MockbotDashboard(App):
             self._cmd_log("[bold red]Error:[/bold red] Cannot manage timers in Global/System context. Use 'use #channel' first.")
             return
         self.push_screen(TimersManagerScreen())
+
+    def action_manage_tts_history(self) -> None:
+        self.push_screen(TTSHistoryScreen())
 
     def action_kill_tts(self) -> None:
         try:
@@ -846,20 +862,105 @@ class MockbotDashboard(App):
             try:
                 msg = self.bot.generate_message(channel_name)
                 if msg:
+                    # In TUI speak, original_message_id is not applicable since it's forced
+                    # Queue the response immediately
                     success = await self.bot.send_message_to_channel(channel_name, msg)
-                    
                     if success:
-                        # Surface the message in the TUI stream log
+                        self._cmd_log(f"[bold green]Forcing bot to speak in {self.current_context}...[/bold green]")
                         if hasattr(self.bot, 'my_logger'):
                             self.bot.my_logger.log_message(channel_name, self.bot.nick, msg, is_bot_message=True)
                             
-                        self._cmd_log(f"[bold green]Forcing bot to speak in {self.current_context}...[/bold green]")
+                        # Now optionally generate TTS if the bot has it enabled
+                        if getattr(self.bot, 'enable_tts', False):
+                            # Check channel configs for TTS settings
+                            try:
+                                import sqlite3
+                                conn = sqlite3.connect(self.bot.db_file)
+                                c = conn.cursor()
+                                c.execute("SELECT tts_enabled, tts_delay_enabled FROM channel_configs WHERE channel_name = ?", (channel_name,))
+                                row = c.fetchone()
+                                conn.close()
+                                
+                                tts_enabled = bool(row[0]) if row else False
+                                tts_delay_enabled = bool(row[1]) if row else False
+                                
+                                if tts_enabled:
+                                    from bot.tts import start_tts_processing
+                                    from datetime import datetime
+                                    
+                                    # Fallback simple call if TTS delay was meant to be used, we ignore it here because it's a CLI force command
+                                    # and we already sent the message. 
+                                    original_timestamp_str = datetime.now().strftime("%Y%m%d-%H%M%S")
+                                    
+                                    start_tts_processing(
+                                        input_text=msg,
+                                        channel_name=channel_name,
+                                        message_id="cli-forced-speak", 
+                                        timestamp_str=original_timestamp_str,
+                                        db_file=self.bot.db_file
+                                    )
+                                    self._cmd_log(f"[italic]Queued TTS task for {channel_name}[/italic]")
+                            except Exception as e:
+                                self._cmd_log(f"[bold red]Error starting TTS:[/bold red] {e}")
+
                     else:
                         self._cmd_log(f"[bold red]Error:[/bold red] Failed to send message to Twitch channel {channel_name}.")
                 else:
                     self._cmd_log(f"[bold red]Error:[/bold red] Failed to generate message for {self.current_context}.")
             except Exception as e:
                 self._cmd_log(f"[bold red]Error:[/bold red] {e}")
+
+        elif cmd == 'testvoice':
+            if self.current_context in ("Global", "System"):
+                self._cmd_log("[bold red]Error:[/bold red] Cannot run testvoice in Global context. Use 'use #channel' first.")
+                return
+                
+            channel_name = self.current_context.lstrip('#').lower()
+            
+            if len(args) < 1:
+                test_text = self.bot.generate_message(channel_name)
+                if not test_text:
+                    self._cmd_log(f"[bold red]Error:[/bold red] Failed to generate Markov message for {self.current_context}.")
+                    return
+                self._cmd_log(f"🧬 Generated Markov string: '{test_text}'")
+            else:
+                test_text = " ".join(args)
+                
+            self._cmd_log(f"🧠 Pushing '{test_text}' natively to the TTS Engine without sending to Twitch...")
+            
+            try:
+                from bot.tts import process_text
+                import asyncio
+                import subprocess
+                
+                async def _run_testvoice():
+                    try:
+                        def _blocking_wrapper():
+                            from bot.tts import process_text_thread
+                            import uuid, os
+                            from datetime import datetime
+                            msg_id = "test_" + str(uuid.uuid4())[:8]
+                            out_dir = f"static/outputs/{channel_name}"
+                            os.makedirs(out_dir, exist_ok=True)
+                            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                            f_path = f"{out_dir}/{channel_name}_{msg_id}_{ts}.wav"
+                            audio_file, tts_id = process_text_thread(test_text, channel_name, full_path=f_path, message_id=msg_id)
+                            return audio_file is not None, audio_file
+                            
+                        success, audio_file = await asyncio.to_thread(_blocking_wrapper)
+                        
+                        if success and audio_file:
+                            self._cmd_log(f"[bold green]Testvoice generated safely. Playing audio natively...[/bold green]")
+                            subprocess.Popen(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audio_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        else:
+                            self._cmd_log(f"[bold red]Testvoice generated nothing.[/bold red]")
+                    except Exception as e:
+                        self._cmd_log(f"[bold red]Testvoice thread crash:[/bold red] {e}")
+
+                if self.bot.loop:
+                    self.bot.loop.create_task(_run_testvoice())
+            except Exception as e:
+                self._cmd_log(f"[bold red]Failed to execute testvoice:[/bold red] {e}")
                 
         elif cmd == 'poll':
             if self.current_context == "Global":
@@ -1425,6 +1526,16 @@ class MockbotDashboard(App):
                     self.write_log(f"[bold green]Updated[/bold green] {column} for {self.current_context} to {value}")
                 await conn.commit()
             self.bot.load_channel_settings() # Reload settings into memory
+            
+            # Unbind all TTS generation cache locks so they dynamically fetch the new DB rows during next generation
+            try:
+                import bot.tts
+                for func_name in ['get_advanced_tts_configs_cached', 'get_tts_provider_cached', 'get_channel_voice_preset_cached', 'get_voice_enabled_for_channel']:
+                    func = getattr(bot.tts, func_name, None)
+                    if func and hasattr(func, 'cache_clear'):
+                        func.cache_clear()
+            except Exception: pass
+            
         except Exception as e:
             self.write_log(f"[bold red]Database Error:[/bold red] {e}")
 

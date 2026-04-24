@@ -1,5 +1,6 @@
 # TTS Core Dependencies for Bark and Transformers
 accelerate>=0.29.3
+rvc-python
 transformers>=4.40.0
 huggingface-hub>=0.30.0,<1.0
 safetensors>=0.4.3

@@ -81,7 +81,18 @@ def ensure_db_setup(db_file):
                         log_dice BOOLEAN DEFAULT 0,
                         pubsub_bits BOOLEAN DEFAULT 0,
                         pubsub_points BOOLEAN DEFAULT 0,
-                        tts_reward TEXT DEFAULT ''
+                        tts_reward TEXT DEFAULT '',
+                        tts_provider TEXT DEFAULT 'bark',
+                        rvc_model TEXT DEFAULT '',
+                        chatterbox_temperature REAL DEFAULT 0.8,
+                        chatterbox_exaggeration REAL DEFAULT 0.5,
+                        bark_text_temp REAL DEFAULT 0.7,
+                        bark_waveform_temp REAL DEFAULT 0.7,
+                        rvc_pitch INTEGER DEFAULT 0,
+                        rvc_index_rate REAL DEFAULT 0.75,
+                        rvc_api_url TEXT DEFAULT 'http://127.0.0.1:5000',
+                        enabled_lore TEXT DEFAULT '',
+                        lore_bias REAL DEFAULT 15.0
                     )''')
 
         # Add random_chance column to channel_configs if it doesn't exist (migration)
@@ -89,6 +100,14 @@ def ensure_db_setup(db_file):
         if 'random_chance' not in channel_configs_columns:
             c.execute("ALTER TABLE channel_configs ADD COLUMN random_chance REAL DEFAULT 0.0")
             logging.info("Column 'random_chance' added to 'channel_configs'.")
+            
+        if 'enabled_lore' not in channel_configs_columns:
+            c.execute("ALTER TABLE channel_configs ADD COLUMN enabled_lore TEXT DEFAULT ''")
+            logging.info("Column 'enabled_lore' added to 'channel_configs'.")
+            
+        if 'lore_bias' not in channel_configs_columns:
+            c.execute("ALTER TABLE channel_configs ADD COLUMN lore_bias REAL DEFAULT 15.0")
+            logging.info("Column 'lore_bias' added to 'channel_configs'.")
             
         # Add log_dice column to channel_configs if it doesn't exist (migration)
         if 'log_dice' not in channel_configs_columns:
@@ -109,6 +128,27 @@ def ensure_db_setup(db_file):
         if 'tts_reward' not in channel_configs_columns:
             c.execute("ALTER TABLE channel_configs ADD COLUMN tts_reward TEXT DEFAULT ''")
             logging.info("Column 'tts_reward' added to 'channel_configs'.")
+            
+        # Add tts_provider column to channel_configs if it doesn't exist (migration)
+        if 'tts_provider' not in channel_configs_columns:
+            c.execute("ALTER TABLE channel_configs ADD COLUMN tts_provider TEXT DEFAULT 'bark'")
+            logging.info("Column 'tts_provider' added to 'channel_configs'.")
+            
+        # Add RVC and Advanced TTS columns
+        advanced_tts_cols = [
+            ('rvc_model', "TEXT DEFAULT ''"),
+            ('chatterbox_temperature', "REAL DEFAULT 0.8"),
+            ('chatterbox_exaggeration', "REAL DEFAULT 0.5"),
+            ('bark_text_temp', "REAL DEFAULT 0.7"),
+            ('bark_waveform_temp', "REAL DEFAULT 0.7"),
+            ('rvc_pitch', "INTEGER DEFAULT 0"),
+            ('rvc_index_rate', "REAL DEFAULT 0.75"),
+            ('rvc_api_url', "TEXT DEFAULT 'http://127.0.0.1:5051'")
+        ]
+        for col, col_def in advanced_tts_cols:
+            if col not in channel_configs_columns:
+                c.execute(f"ALTER TABLE channel_configs ADD COLUMN {col} {col_def}")
+                logging.info(f"Column '{col}' added to 'channel_configs'.")
             
         conn.commit()
 

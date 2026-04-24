@@ -1,8 +1,93 @@
 import aiosqlite
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Button, Input, Label, Static, Select
+from textual.widgets import DataTable, Button, Input, Label, Static, Select, TextArea
 from textual.containers import Horizontal, Vertical, VerticalScroll
+
+class LoreManagerScreen(ModalScreen):
+    """Screen to manage multiple lore configurations."""
+    BINDINGS = [("escape", "app.pop_screen", "Back")]
+    
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="manager-container"):
+            self.table = DataTable(id="lore_table")
+            self.table.cursor_type = "row"
+            self.table.add_columns("Status", "Lore File")
+            
+            yield Label(f"Manage Lore for {self.app.current_context}", id="lore_manager_title", classes="manager-title")
+            yield Static("Click a row to toggle it ON/OFF. Then press Save.", classes="manager-help")
+            
+            with Horizontal(classes="manager-actions"):
+                yield Label("Base Channel Weight:", id="lore_bias_label")
+                yield Input(id="lore_bias_input", type="number", value="15.0")
+                yield Button("Save & Apply", id="lore_save", variant="success")
+            
+            yield self.table
+
+    async def on_mount(self) -> None:
+        await self.load_data()
+
+    async def load_data(self) -> None:
+        self.table.clear()
+        if not self.app.bot: return
+        
+        context = self.app.current_context.lstrip('#')
+        enabled_str = ""
+        lore_bias_val = 15.0
+        async with aiosqlite.connect(self.app.bot.db_file) as conn:
+            c = await conn.cursor()
+            await c.execute("SELECT enabled_lore, lore_bias FROM channel_configs WHERE channel_name = ?", (context,))
+            row = await c.fetchone()
+            if row:
+                if row[0]: enabled_str = row[0]
+                if len(row) > 1 and row[1] is not None: lore_bias_val = float(row[1])
+                
+        try:
+            self.query_one("#lore_bias_input").value = str(lore_bias_val)
+        except Exception:
+            pass
+                
+        enabled_list = [f.strip() for f in enabled_str.split(",") if f.strip()]
+        
+        import os
+        if os.path.exists("./lore"):
+            for file in sorted(os.listdir("./lore")):
+                if file.endswith(".txt"):
+                    is_active = file in enabled_list
+                    status_str = "[X]" if is_active else "[ ]"
+                    self.table.add_row(status_str, file, key=file)
+                    
+    async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        col_key = list(self.table.columns.keys())[0]
+        current_status = self.table.get_cell(event.row_key, col_key)
+        new_status = "[ ]" if current_status == "[X]" else "[X]"
+        self.table.update_cell(event.row_key, col_key, new_status)
+        
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "lore_save":
+            enabled_files = []
+            col_key = list(self.table.columns.keys())[0]
+            
+            for row_key in self.table.rows:
+                status = self.table.get_cell(row_key, col_key)
+                if status == "[X]":
+                    enabled_files.append(row_key.value)
+                    
+            new_enabled_str = ",".join(enabled_files)
+            
+            lore_bias_val = 15.0
+            try:
+                lore_bias_val = float(self.query_one("#lore_bias_input").value)
+            except Exception:
+                pass
+                
+            context = self.app.current_context.lstrip('#')
+            async with aiosqlite.connect(self.app.bot.db_file) as conn:
+                await conn.execute("UPDATE channel_configs SET enabled_lore = ?, lore_bias = ? WHERE channel_name = ?", (new_enabled_str, lore_bias_val, context))
+                await conn.commit()
+                
+            self.app.notify(f"Lore updated successfully.")
+            self.app.pop_screen()
 
 class CommandsManagerScreen(ModalScreen):
     """Screen to manage custom commands for the current channel."""
@@ -268,6 +353,42 @@ class SettingRow(Horizontal):
                 options = [("Small", "small"), ("Regular", "regular")]
                 val_str = str(self.current_value) if self.current_value in ("small", "regular") else "small"
                 yield Select(options, value=val_str, id=f"input_{self.setting_key}")
+            elif self.setting_key == "tts_provider":
+                options = [("Suno Bark", "bark"), ("Chatterbox TTS", "chatterbox"), ("RVC (Bark Base)", "rvc"), ("RVC (Chatterbox Base)", "rvc_chatterbox")]
+                val_str = str(self.current_value) if self.current_value in ("bark", "chatterbox", "rvc", "rvc_chatterbox") else "bark"
+                yield Select(options, value=val_str, id=f"input_{self.setting_key}")
+            elif self.setting_key == "rvc_model":
+                import os
+                options = [("None", "")]
+                if os.path.exists("./voices"):
+                    for file in os.listdir("./voices"):
+                        if file.endswith(".pth"):
+                            name = file.replace(".pth", "")
+                            options.append((name, name))
+                val_str = str(self.current_value) if self.current_value else ""
+                if val_str and val_str not in [o[1] for o in options]:
+                    options.append((val_str, val_str))
+                yield Select(options, value=val_str, id=f"input_{self.setting_key}")
+            elif self.setting_key == "voice_preset":
+                import os
+                options = [
+                    ("Bark: Gen 0", "v2/en_speaker_0"), ("Bark: Gen 1", "v2/en_speaker_1"), 
+                    ("Bark: Gen 2", "v2/en_speaker_2"), ("Bark: Gen 3", "v2/en_speaker_3"),
+                    ("Bark: Gen 4", "v2/en_speaker_4"), ("Bark: Gen 5", "v2/en_speaker_5"),
+                    ("Bark: Gen 6", "v2/en_speaker_6"), ("Bark: Gen 7", "v2/en_speaker_7"),
+                    ("Bark: Gen 8", "v2/en_speaker_8"), ("Bark: Gen 9", "v2/en_speaker_9")
+                ]
+                if os.path.exists("./voices"):
+                    for file in sorted(os.listdir("./voices")):
+                        if file.endswith((".npz", ".wav")):
+                            options.append((file, file))
+                val_str = str(self.current_value) if self.current_value else "v2/en_speaker_5"
+                if val_str and val_str not in [o[1] for o in options]:
+                    options.append((val_str, val_str))
+                yield Select(options, value=val_str, id=f"input_{self.setting_key}")
+            elif self.setting_key == "enabled_lore":
+                yield Button("Manage Lore Library", id="btn_enabled_lore_manage", variant="primary")
+                return
             else:
                 yield Input(value=str(self.current_value), id=f"input_{self.setting_key}")
 
@@ -293,7 +414,17 @@ class SettingsManagerScreen(ModalScreen):
         "log_dice": "1 to log random chance rolls to the console window, 0 to hide them.",
         "pubsub_bits": "1 to respond to bits/cheers, 0 to ignore them.",
         "pubsub_points": "1 to respond to channel point redemptions, 0 to ignore.",
-        "tts_reward": "The exact name of a Twitch Channel Point reward that triggers TTS."
+        "tts_reward": "The exact name of a Twitch Channel Point reward that triggers TTS.",
+        "tts_provider": "Which TTS Engine to use ('bark', 'chatterbox', 'rvc', 'rvc_chatterbox'). Only active for premium features.",
+        "rvc_model": "The underlying .pth model name in /voices for Voice Cloning.",
+        "chatterbox_temperature": "Generation randomness for Chatterbox (default 0.8).",
+        "chatterbox_exaggeration": "Expressiveness control for Chatterbox (default 0.5).",
+        "bark_text_temp": "Text temperature for Suno Bark (default 0.7).",
+        "bark_waveform_temp": "Waveform temperature for Suno Bark (default 0.7).",
+        "rvc_pitch": "Pitch shift for RVC (-12 for female-to-male, +12 for male-to-female).",
+        "rvc_index_rate": "Index rate for cloning accuracy ratio (default 0.75).",
+        "rvc_api_url": "The API path pointing to the Python 3.10 wrapper (e.g. http://127.0.0.1:5051).",
+        "enabled_lore": "Comma-separated list of .txt files from 'lore/' to inject into the brain (e.g. mgs.txt)."
     }
 
     def compose(self) -> ComposeResult:
@@ -322,15 +453,39 @@ class SettingsManagerScreen(ModalScreen):
                 settings_list.mount(Label("No channel configuration found. Is the bot joined to this channel?"))
                 return
                 
-            for key in row.keys():
-                if key in ["channel_name", "user_id", "owner", "trusted_users", "ignored_users", "currently_connected"]:
-                    continue # Skip non-configurable or separately managed fields
-                
-                desc = self.SETTINGS_META.get(key, "No description available.")
-                settings_list.mount(SettingRow(key, row[key], desc))
+            categories = {
+                "Behavior & Core Rules": ["join_channel", "use_general_model", "random_chance", "log_dice", "lines_between_messages", "time_between_messages"],
+                "External Lore Modeling": ["enabled_lore"],
+                "Twitch Event Triggers": ["pubsub_bits", "pubsub_points", "tts_reward"],
+                "TTS Fundamentals": ["tts_enabled", "voice_enabled", "tts_delay_enabled", "tts_provider", "voice_preset"],
+                "Synthesis Tuning (Bark/Chatterbox)": ["bark_model", "bark_text_temp", "bark_waveform_temp", "chatterbox_temperature", "chatterbox_exaggeration"],
+                "Voice Cloning (RVC)": ["rvc_model", "rvc_pitch", "rvc_index_rate", "rvc_api_url"]
+            }
+            
+            seen_keys = set(["channel_name", "user_id", "owner", "trusted_users", "ignored_users", "currently_connected"])
+            
+            for cat_name, keys in categories.items():
+                cat_keys = [k for k in keys if k in row.keys()]
+                if cat_keys:
+                    settings_list.mount(Label(f"── {cat_name} ──", classes="setting-category"))
+                    for key in cat_keys:
+                        desc = self.SETTINGS_META.get(key, "No description available.")
+                        settings_list.mount(SettingRow(key, row[key], desc))
+                        seen_keys.add(key)
+            
+            stragglers = [k for k in row.keys() if k not in seen_keys]
+            if stragglers:
+                settings_list.mount(Label("── Advanced / Other ──", classes="setting-category"))
+                for key in stragglers:
+                    desc = self.SETTINGS_META.get(key, "No description available.")
+                    settings_list.mount(SettingRow(key, row[key], desc))
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
+        if btn_id == "btn_enabled_lore_manage":
+            self.app.push_screen(LoreManagerScreen())
+            return
+            
         if btn_id and btn_id.startswith("btn_"):
             key = btn_id[4:]
             
@@ -491,3 +646,159 @@ class TimersManagerScreen(ModalScreen):
                 msg_list = [m[0] for m in msgs]
                 import json
                 self.query_one("#timer_msgs_input", Input).value = json.dumps(msg_list)
+
+
+class TTSHistoryScreen(ModalScreen):
+    """Screen to manage and playback TTS history logs."""
+    
+    BINDINGS = [("escape", "app.pop_screen", "Back")]
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._current_audio_process = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="manager-container"):
+            yield Label(f"TTS History Archive | Context: {self.app.current_context}", classes="manager-title")
+            yield Label("Use UP/DOWN arrows to preview generated text, and ENTER to play the audio file.", classes="manager-help")
+            
+            self.table = DataTable(id="tts_table")
+            self.table.cursor_type = "row"
+            self.table.zebra_stripes = True
+            yield self.table
+                
+            yield TextArea("Select a row to preview TTS message...", id="tts_preview_text", read_only=True, classes="tts-preview")
+            
+            with Horizontal(classes="manager-actions"):
+                yield Button("▶ Play Audio (Enter)", id="btn_tts_play", variant="success", disabled=True)
+                yield Button("■ Stop Audio", id="btn_tts_stop", variant="error")
+                yield Button("📂 Open Folder", id="btn_tts_folder", variant="primary", disabled=True)
+                yield Button("Refresh", id="btn_tts_refresh")
+                yield Button("🧹 Clean Orphans", id="btn_tts_clean", variant="warning")
+                yield Button("Close", id="btn_close", variant="primary")
+
+    async def on_mount(self) -> None:
+        self.table.add_columns("Time", "Channel", "Voice", "Prompt Preview")
+        await self.load_data()
+
+    async def load_data(self) -> None:
+        self.table.clear()
+        if not self.app.bot:
+            return
+            
+        context = self.app.current_context
+        query = "SELECT timestamp, channel, voice_preset, message, file_path FROM tts_logs"
+        params = ()
+        
+        if context != "Global":
+            query += " WHERE channel = ?"
+            params = (context.lstrip('#'),)
+            
+        query += " ORDER BY timestamp DESC LIMIT 100"
+            
+        import aiosqlite, json
+        try:
+            async with aiosqlite.connect(self.app.bot.db_file) as conn:
+                c = await conn.cursor()
+                await c.execute(query, params)
+                rows = await c.fetchall()
+                
+            for row in rows:
+                timestamp, ch, voice, msg, fpath = row
+                preview = (msg[:45] + '...') if len(msg) > 45 else msg
+                row_key = json.dumps({"f": fpath, "m": msg})
+                self.table.add_row(timestamp, f"#{ch}", voice, preview, key=row_key)
+                
+            if len(rows) > 0:
+                self.table.move_cursor(row=0)
+        except Exception as e:
+            self.app.notify(f"Failed to load TTS history: {e}", severity="error")
+
+    async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        self._action_play_row(event.row_key.value)
+
+    async def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._update_preview(event.row_key.value)
+
+    def _update_preview(self, row_key_str: str) -> None:
+        import json
+        try:
+            data = json.loads(row_key_str)
+            self.query_one("#tts_preview_text", TextArea).text = data["m"]
+            self.query_one("#btn_tts_play", Button).disabled = False
+            self.query_one("#btn_tts_folder", Button).disabled = False
+        except Exception:
+            pass
+
+    def _action_play_row(self, row_key_str: str) -> None:
+        import json, os, subprocess
+        try:
+            data = json.loads(row_key_str)
+            fpath = data["f"]
+            if not os.path.exists(fpath):
+                self.app.notify("Audio file no longer exists on disk!", severity="error")
+                return
+                
+            if self._current_audio_process:
+                try:
+                    self._current_audio_process.terminate()
+                except Exception:
+                    pass
+                    
+            self._current_audio_process = subprocess.Popen(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", fpath], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.app.notify(f"Playing '{os.path.basename(fpath)}'", severity="info")
+        except Exception as e:
+            self.app.notify(f"Playback failed: {e}", severity="error")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_close":
+            self.app.pop_screen()
+        elif event.button.id == "btn_tts_refresh":
+            await self.load_data()
+            self.app.notify("TTS logs refreshed.")
+        elif event.button.id == "btn_tts_stop":
+            if self._current_audio_process:
+                try:
+                    self._current_audio_process.terminate()
+                    self.app.notify("Audio stopped.")
+                except Exception:
+                    pass
+        elif event.button.id == "btn_tts_play":
+            try:
+                row_key = self.table.coordinate_to_cell_key(self.table.cursor_coordinate).row_key
+                self._action_play_row(row_key.value)
+            except Exception:
+                self.app.notify("Select a valid row first.", severity="warning")
+        elif event.button.id == "btn_tts_folder":
+            try:
+                import json, os, subprocess
+                row_key = self.table.coordinate_to_cell_key(self.table.cursor_coordinate).row_key
+                data = json.loads(row_key.value)
+                fdir = os.path.dirname(os.path.abspath(data["f"]))
+                subprocess.Popen(["xdg-open", fdir])
+                self.app.notify(f"Opened {fdir}")
+            except Exception as e:
+                self.app.notify(f"Failed to open folder: {e}", severity="error")
+        elif event.button.id == "btn_tts_clean":
+            import asyncio
+            asyncio.create_task(self._clean_orphans())
+
+    async def _clean_orphans(self) -> None:
+        import aiosqlite, os
+        count = 0
+        try:
+            async with aiosqlite.connect(self.app.bot.db_file) as conn:
+                c = await conn.cursor()
+                await c.execute("SELECT message_id, file_path FROM tts_logs")
+                rows = await c.fetchall()
+                
+                for msg_id, file_path in rows:
+                    if not os.path.exists(file_path):
+                        await c.execute("DELETE FROM tts_logs WHERE message_id = ?", (msg_id,))
+                        count += 1
+                await conn.commit()
+                
+            self.app.notify(f"Purged {count} orphaned TTS logs from DB!")
+            await self.load_data()
+        except Exception as e:
+            self.app.notify(f"Error cleaning orphans: {e}", severity="error")

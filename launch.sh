@@ -57,7 +57,11 @@ show_help() {
     echo "  cli [tts]         Start interactive CLI (add 'tts' to enable voice)"
     echo "  logs [lines]      View logs"
     echo "  docs              Serve the MkDocs wiki locally"
-    echo "  setup-tts         Install TTS dependencies"
+    echo "  update            - Update dependencies"
+    echo "  install           - Install the bot (systemd service)"
+    echo "  setup-rvc         - Create isolated Python 3.10 microservice for RVC"
+    echo "  start-rvc         - Boot internal FastAPI worker for RVC clones"
+    echo "  setup-tts         Install native Bark TTS dependencies"
     echo "  clean             Remove temporary files"
     echo ""
 }
@@ -166,6 +170,37 @@ cmd_cli() {
     fi
 }
 
+cmd_setup_rvc() {
+    echo -e "${CYAN}Building internal Python 3.10 sandbox for RVC Server...${NC}"
+    if [ ! -d ".venv_rvc" ]; then
+        if ! command -v uv &> /dev/null; then
+            echo "Installing minimal Astral 'uv' bootstrap..."
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="$HOME/.local/bin:$PATH"
+        fi
+        echo "Creating Python 3.10 venv via uv..."
+        uv venv .venv_rvc --python 3.10
+        echo "Updating sandbox PIP..."
+        uv pip install --python .venv_rvc --upgrade pip
+        echo "Installing FastAPI microservice requirements inside sandbox..."
+        uv pip install --python .venv_rvc -r requirements-rvc.txt
+        echo -e "${GREEN}RVC Sandbox built securely at .venv_rvc!${NC}"
+    else
+        echo -e "${GREEN}RVC Sandbox already active.${NC}"
+    fi
+}
+
+cmd_start_rvc() {
+    echo -e "${CYAN}Booting background RVC Inference Server...${NC}"
+    if [ -d ".venv_rvc" ]; then
+        nohup .venv_rvc/bin/python rvc_server.py > logs/rvc_server.log 2>&1 &
+        echo -e "${GREEN}RVC Server active on http://127.0.0.1:5051 in the background!${NC}"
+    else
+        echo -e "${RED}Error: RVC Sandbox missing! Run './launch.sh setup-rvc' first.${NC}"
+        exit 1
+    fi
+}
+
 cmd_setup_tts() {
     echo -e "${CYAN}Installing TTS dependencies...${NC}"
     source "$VENV_DIR/bin/activate" 2>/dev/null || true
@@ -210,6 +245,9 @@ case "${1:-}" in
     logs) cmd_logs "${2:-50}" ;;
     docs) cmd_docs ;;
     setup-tts) cmd_setup_tts ;;
+    setup-rvc) cmd_setup_rvc ;;
+    start-rvc) cmd_start_rvc ;;
     clean) cmd_clean ;;
     *) show_help ;;
 esac
+
