@@ -1,11 +1,10 @@
-import configparser
+import sqlite3
 from datetime import datetime
 
 from twitchio.ext import commands
-import aiosqlite
 import logging
-import sqlite3
 from tabulate import tabulate
+from bot.config import config
 from bot.tts import start_tts_processing
 
 YELLOW = "\x1b[33m" #xterm colors. dunno why tbh
@@ -20,23 +19,19 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
         return
 
     # Fetch channel-specific trusted users and owner
-    conn = await aiosqlite.connect(self.db_file)
-    c = await conn.cursor()
-    await c.execute("SELECT voice_enabled, owner, trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-    channel_config = await c.fetchone()
-    await conn.close()
+    channel_config_row = await self.db.get_channel_config(ctx.channel.name)
 
-    if channel_config is None:
+    if channel_config_row is None:
         await ctx.send("This channel is not configured.")
         return
 
-    voice_enabled, channel_owner, channel_trusted_users = channel_config
-    channel_trusted_users = channel_trusted_users.split(",") if channel_trusted_users else []
+    voice_enabled = channel_config_row["voice_enabled"]
+    channel_owner = channel_config_row["owner"]
+    channel_trusted_users_raw = channel_config_row["trusted_users"] or ""
+    channel_trusted_users = [u for u in channel_trusted_users_raw.split(",") if u]
 
     # Check if the user is allowed to use the command
-    config = configparser.ConfigParser()
-    config.read("settings.conf")
-    bot_owner = config.get("auth", "owner")
+    bot_owner = config.owner
 
     if ctx.author.name not in channel_trusted_users and ctx.author.name != channel_owner and ctx.author.name != bot_owner:
         self.my_logger.log_warning(f"Unauthorized attempt to use ansv command by {ctx.author.name}", channel=ctx.channel.name)
@@ -55,14 +50,10 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
                 self.my_logger.log_message(ctx.channel.name, self.nick, response, is_bot_message=True)
 
                 # Trigger TTS processing with database logging (matches web UI behavior)
-                conn = await aiosqlite.connect(self.db_file)
-                c = await conn.cursor()
-                await c.execute("SELECT tts_enabled, voice_preset FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-                tts_config = await c.fetchone()
-                await conn.close()
+                tts_cfg = await self.db.get_channel_config(ctx.channel.name)
 
-                if tts_config and tts_config[0]:
-                    voice_preset = tts_config[1] or 'v2/en_speaker_5'
+                if tts_cfg and tts_cfg["tts_enabled"]:
+                    voice_preset = tts_cfg["voice_preset"] or 'v2/en_speaker_5'
                     synthetic_message_id = f"speak_{ctx.channel.name}_{int(datetime.now().timestamp())}"
                     timestamp_str = datetime.now().isoformat()
 
@@ -89,273 +80,152 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
             await ctx.send("Unable to generate a message at this time.")
 
     elif setting in ["start", "stop"]:
-        # Get the bot owner's name from the configuration file
-        config = configparser.ConfigParser()
-        config.read("settings.conf")
-        bot_owner = config.get("auth", "owner")
-
-        conn = await aiosqlite.connect(self.db_file)
-        c = await conn.cursor()
-
-        # Determine the target channel
+        bot_owner = config.owner
         target_channel = new_value if ctx.author.name == bot_owner and new_value else ctx.channel.name
 
-        # Retrieve the owner of the target channel from the database
-        await c.execute("SELECT owner FROM channel_configs WHERE channel_name = ?", (target_channel,))
-        channel_config = await c.fetchone()
-
-        if channel_config is None:
+        ch_auth = await self.db.get_channel_auth(target_channel)
+        if ch_auth is None:
             await ctx.send(f"Channel {target_channel} not found in database.")
-            await conn.close()
             return
 
-        channel_owner = channel_config[0]
-
-        # Check if the user is the bot owner or the channel owner
+        channel_owner = ch_auth[0]
         if ctx.author.name != bot_owner and ctx.author.name != channel_owner:
             await ctx.send("You do not have permission to use this command for this channel.")
-            await conn.close()
             return
 
-        # Update the voice_enabled field based on the command
         voice_enabled_status = 1 if setting == "start" else 0
-        await c.execute("UPDATE channel_configs SET voice_enabled = ? WHERE channel_name = ?", (voice_enabled_status, target_channel))
-        await conn.commit()
-        await conn.close()
-
+        await self.db.set_channel_field(target_channel, "voice_enabled", voice_enabled_status)
         action = "enabled" if setting == "start" else "disabled"
         await ctx.send(f"Voice {action} in {target_channel}.")
 
     elif setting in ["time", "lines"]:
-        # Convert new_value to an integer
         new_value_int = int(new_value)
-
-        # Get the channel name from the context
         channel_name = ctx.channel.name
+        bot_owner = config.owner
 
-        # Get the bot owner's name from the configuration file
-        config = configparser.ConfigParser()
-        config.read("settings.conf")
-        bot_owner = config.get("auth", "owner")
-
-        # Update the database with the new value
-        conn = await aiosqlite.connect(self.db_file)
-        c = await conn.cursor()
-
-        # Retrieve the owner and trusted users of the channel from the database
-        await c.execute("SELECT owner, trusted_users FROM channel_configs WHERE channel_name = ?", (channel_name,))
-        channel_config = await c.fetchone()
-
-        if channel_config is None:
+        ch_auth = await self.db.get_channel_auth(channel_name)
+        if ch_auth is None:
             await ctx.send(f"Channel {channel_name} not found in database.")
-            await conn.close()
             return
 
-        channel_owner = channel_config[0]
-        trusted_users = channel_config[1].split(",") if channel_config[1] else []
+        channel_owner, trusted_raw = ch_auth
+        trusted_users = [u for u in (trusted_raw or "").split(",") if u]
 
-        # Check if the user is the bot owner, channel owner, or a trusted user
         if ctx.author.name != bot_owner and ctx.author.name != channel_owner and ctx.author.name not in trusted_users:
             await ctx.send("You do not have permission to use this command in this channel.")
-            await conn.close()
             return
 
-        # Check if the channel is in the database
-        await c.execute("SELECT COUNT(*) FROM channel_configs WHERE channel_name = ?", (channel_name,))
-        if (await c.fetchone())[0] == 0:
-            await ctx.send(f"Channel {channel_name} not found in database.")
-        else:
-            if setting == "time":
-                await c.execute("UPDATE channel_configs SET time_between_messages = ? WHERE channel_name = ?", (new_value_int, channel_name))
-            elif setting == "lines":
-                await c.execute("UPDATE channel_configs SET lines_between_messages = ? WHERE channel_name = ?", (new_value_int, channel_name))
-
-            await conn.commit()
-            await ctx.send(f"Set {setting}_between_messages to {new_value_int} for channel {channel_name}.")
-            self.my_logger.info(f"{ctx.author.name} set {setting}_between_messages to {new_value_int} for channel {channel_name}.")
-
-        await conn.close()
+        col = "time_between_messages" if setting == "time" else "lines_between_messages"
+        await self.db.set_channel_field(channel_name, col, new_value_int)
+        await ctx.send(f"Set {setting}_between_messages to {new_value_int} for channel {channel_name}.")
+        self.my_logger.info(f"{ctx.author.name} set {setting}_between_messages to {new_value_int} for channel {channel_name}.")
 
     elif setting == "trust":
-        # Get the bot owner's name from the configuration file
-        config = configparser.ConfigParser()
-        config.read("settings.conf")
-        bot_owner = config.get("auth", "owner")
+        bot_owner = config.owner
 
-        # Check if the user is the bot owner or the channel owner
-        conn = await aiosqlite.connect(self.db_file)
-        c = await conn.cursor()
-        await c.execute("SELECT owner FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-        channel_owner_row = await c.fetchone()
-        channel_owner = channel_owner_row[0] if channel_owner_row else None
+        ch_auth = await self.db.get_channel_auth(ctx.channel.name)
+        channel_owner = ch_auth[0] if ch_auth else None
 
         if ctx.author.name != bot_owner and ctx.author.name != channel_owner:
             await ctx.send("You do not have permission to use this command.")
-            await conn.close()
             return
 
-        # Update the trusted_users field for the specific channel in the database
-        await c.execute("SELECT trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-        result = await c.fetchone()
-        existing_trusted_users = result[0].split(",") if result and result[0] else []
+        trusted_raw = ch_auth[1] if ch_auth else ""
+        existing_trusted_users = [u for u in (trusted_raw or "").split(",") if u]
         if new_value not in existing_trusted_users:
-            updated_trusted_users = existing_trusted_users + [new_value]
-            await c.execute("UPDATE channel_configs SET trusted_users = ? WHERE channel_name = ?", (",".join(updated_trusted_users), ctx.channel.name))
-            await conn.commit()
+            existing_trusted_users.append(new_value)
+            await self.db.set_channel_field(ctx.channel.name, "trusted_users", ",".join(existing_trusted_users))
             await ctx.send(f"User {new_value} is now trusted in {ctx.channel.name}.")
         else:
             await ctx.send(f"User {new_value} is already trusted in {ctx.channel.name}.")
-
-        await conn.close()
 
     elif setting == "join":
         if ctx.author.name != self.owner:
             await ctx.send("Unauthorized attempt to use join command.")
             return
 
-        async with aiosqlite.connect(self.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute("SELECT COUNT(*) FROM channel_configs WHERE channel_name = ?", (new_value,))
-            if (await c.fetchone())[0] == 0:
-                try:
-                    await self.join_channels([new_value])
-                    self.channels.append(new_value)
-                    # Corrected line below
-                    await c.execute("INSERT OR REPLACE INTO channel_configs (channel_name, voice_enabled, tts_enabled, join_channel, owner, trusted_users) VALUES (?, 0, 0, 1, ?, '')", (new_value, new_value))
-                    await conn.commit()
-                    await ctx.send(f"Joined {new_value} and added to channels.")
-                except Exception as e:
-                    await ctx.send(f"Failed to join {new_value}: {str(e)}")
-            else:
-                await ctx.send(f"Already in {new_value} or it's already in the database.")
+        if not await self.db.channel_exists(new_value):
+            try:
+                await self.join_channels([new_value])
+                self.channels.append(new_value)
+                await self.db.insert_channel(new_value, new_value)
+                await ctx.send(f"Joined {new_value} and added to channels.")
+            except Exception as e:
+                await ctx.send(f"Failed to join {new_value}: {str(e)}")
+        else:
+            await ctx.send(f"Already in {new_value} or it's already in the database.")
 
     elif setting == "part":
         if ctx.author.name != self.owner:
             await ctx.send("You do not have permission to use this command.")
             return
 
-        async with aiosqlite.connect(self.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute("SELECT COUNT(*) FROM channel_configs WHERE channel_name = ?", (new_value,))
-            if (await c.fetchone())[0] > 0 and new_value in self.channels:
-                try:
-                    await self.part_channels([new_value])
-                    self.channels.remove(new_value)
-                    await c.execute("UPDATE channel_configs SET join_channel = 0 WHERE channel_name = ?", (new_value,))
-                    await conn.commit()
-                    await ctx.send(f"Left channel: {new_value}")
-                except Exception as e:
-                    await ctx.send(f"Failed to leave channel: {new_value}. Error: {str(e)}")
-            else:
-                await ctx.send(f"The bot is not in channel: {new_value} or it's not in the database.")
+        if await self.db.channel_exists(new_value) and new_value in self.channels:
+            try:
+                await self.part_channels([new_value])
+                self.channels.remove(new_value)
+                await self.db.set_channel_field(new_value, "join_channel", 0)
+                await ctx.send(f"Left channel: {new_value}")
+            except Exception as e:
+                await ctx.send(f"Failed to leave channel: {new_value}. Error: {str(e)}")
+        else:
+            await ctx.send(f"The bot is not in channel: {new_value} or it's not in the database.")
 
     elif setting == "voice_preset":
-        # Get the bot owner's name from the configuration file
-        config = configparser.ConfigParser()
-        config.read("settings.conf")
-        bot_owner = config.get("auth", "owner")
+        bot_owner = config.owner
 
-        # Fetch the channel's owner and trusted users
-        conn = await aiosqlite.connect(self.db_file)
-        c = await conn.cursor()
-        await c.execute("SELECT owner, trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-        result = await c.fetchone()
-
-        if result is None:
+        ch_auth = await self.db.get_channel_auth(ctx.channel.name)
+        if ch_auth is None:
             await ctx.send("Channel not found in database.")
             return
 
-        channel_owner, trusted_users = result
-        trusted_users_list = trusted_users.split(",") if trusted_users else []
+        channel_owner, trusted_raw = ch_auth
+        trusted_users_list = [u for u in (trusted_raw or "").split(",") if u]
 
-        # Check if the user has permission
         if ctx.author.name != bot_owner and ctx.author.name != channel_owner and ctx.author.name not in trusted_users_list:
             await ctx.send("You do not have permission to change the voice preset.")
             return
 
-        # Validate and update the voice preset
-        await c.execute("SELECT COUNT(*) FROM voice_options WHERE voice_code = ?", (new_value,))
-        if (await c.fetchone())[0] == 0:
-            await ctx.send("Invalid voice preset.")
-        else:
-            await c.execute("UPDATE channel_configs SET voice_preset = ? WHERE channel_name = ?", (new_value, ctx.channel.name))
-            await conn.commit()
-            await ctx.send(f"Voice preset updated to {new_value} for channel {ctx.channel.name}.")
+        await self.db.set_channel_field(ctx.channel.name, "voice_preset", new_value)
+        await ctx.send(f"Voice preset updated to {new_value} for channel {ctx.channel.name}.")
 
     elif setting == "tts":
-        # Only the bot owner or channel owner can change TTS status
-        config = configparser.ConfigParser()
-        config.read("settings.conf")
-        bot_owner = config.get("auth", "owner")
-
-        conn = await aiosqlite.connect(self.db_file)
-        c = await conn.cursor()
-
-        # Determine the target channel
+        bot_owner = config.owner
         target_channel = ctx.channel.name
 
-        # Retrieve the owner and user_id of the target channel from the database
-        await c.execute("SELECT owner, user_id FROM channel_configs WHERE channel_name = ?", (target_channel,))
-        channel_config = await c.fetchone()
-
-        if channel_config is None:
+        ch_auth = await self.db.get_channel_auth(target_channel)
+        if ch_auth is None:
             await ctx.send(f"Channel {target_channel} not found in database.")
-            await conn.close()
             return
 
-        channel_owner = channel_config[0]
-        user_id = channel_config[1]
-
-        # Check if the user is the bot owner or the channel owner
+        channel_owner = ch_auth[0]
         if ctx.author.name != bot_owner and ctx.author.name != channel_owner:
             await ctx.send("You do not have permission to change TTS settings for this channel.")
-            await conn.close()
             return
 
-
-
-        # Determine the new TTS status based on the command
         if new_value.lower() == "on":
             new_tts_status = True
         elif new_value.lower() == "off":
             new_tts_status = False
         else:
             await ctx.send("Invalid command. Use '!mockbot tts on' or '!mockbot tts off'.")
-            await conn.close()
             return
 
-        # Update the TTS status in the database
-        await c.execute("UPDATE channel_configs SET tts_enabled = ? WHERE channel_name = ?", (new_tts_status, target_channel))
-        await conn.commit()
-        await conn.close()
-
+        await self.db.set_channel_field(target_channel, "tts_enabled", new_tts_status)
         status_text = "enabled" if new_tts_status else "disabled"
         await ctx.send(f"TTS {status_text} for channel {target_channel}.")
 
     elif setting == "bits":
-        # Only the bot owner or channel owner can change Bits status
-        config = configparser.ConfigParser()
-        config.read("settings.conf")
-        bot_owner = config.get("auth", "owner")
-
-        conn = await aiosqlite.connect(self.db_file)
-        c = await conn.cursor()
-
+        bot_owner = config.owner
         target_channel = ctx.channel.name
 
-        await c.execute("SELECT owner FROM channel_configs WHERE channel_name = ?", (target_channel,))
-        channel_config = await c.fetchone()
-
-        if channel_config is None:
+        ch_auth = await self.db.get_channel_auth(target_channel)
+        if ch_auth is None:
             await ctx.send(f"Channel {target_channel} not found in database.")
-            await conn.close()
             return
 
-        channel_owner = channel_config[0]
-
-        if ctx.author.name != bot_owner and ctx.author.name != channel_owner:
+        if ctx.author.name != bot_owner and ctx.author.name != ch_auth[0]:
             await ctx.send("You do not have permission to change Bits settings for this channel.")
-            await conn.close()
             return
 
         if new_value.lower() == "on":
@@ -364,40 +234,23 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
             new_bits_status = False
         else:
             await ctx.send("Invalid command. Use '!mockbot bits on' or '!mockbot bits off'.")
-            await conn.close()
             return
 
-        await c.execute("UPDATE channel_configs SET pubsub_bits = ? WHERE channel_name = ?", (new_bits_status, target_channel))
-        await conn.commit()
-        await conn.close()
-
+        await self.db.set_channel_field(target_channel, "pubsub_bits", new_bits_status)
         status_text = "enabled" if new_bits_status else "disabled"
         await ctx.send(f"Bits tracking {status_text} for channel {target_channel}.")
 
     elif setting == "points":
-        # Only the bot owner or channel owner can change Points status
-        config = configparser.ConfigParser()
-        config.read("settings.conf")
-        bot_owner = config.get("auth", "owner")
-
-        conn = await aiosqlite.connect(self.db_file)
-        c = await conn.cursor()
-
+        bot_owner = config.owner
         target_channel = ctx.channel.name
 
-        await c.execute("SELECT owner FROM channel_configs WHERE channel_name = ?", (target_channel,))
-        channel_config = await c.fetchone()
-
-        if channel_config is None:
+        ch_auth = await self.db.get_channel_auth(target_channel)
+        if ch_auth is None:
             await ctx.send(f"Channel {target_channel} not found in database.")
-            await conn.close()
             return
 
-        channel_owner = channel_config[0]
-
-        if ctx.author.name != bot_owner and ctx.author.name != channel_owner:
+        if ctx.author.name != bot_owner and ctx.author.name != ch_auth[0]:
             await ctx.send("You do not have permission to change Points settings for this channel.")
-            await conn.close()
             return
 
         if new_value.lower() == "on":
@@ -406,13 +259,9 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
             new_points_status = False
         else:
             await ctx.send("Invalid command. Use '!mockbot points on' or '!mockbot points off'.")
-            await conn.close()
             return
 
-        await c.execute("UPDATE channel_configs SET pubsub_points = ? WHERE channel_name = ?", (new_points_status, target_channel))
-        await conn.commit()
-        await conn.close()
-
+        await self.db.set_channel_field(target_channel, "pubsub_points", new_points_status)
         status_text = "enabled" if new_points_status else "disabled"
         await ctx.send(f"Points tracking {status_text} for channel {target_channel}.")
 
@@ -421,38 +270,20 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
             await ctx.send("Please provide the exact name of the Twitch Channel Point reward. Example: !mockbot tts_reward TTS Voice")
             return
 
-        config = configparser.ConfigParser()
-        config.read("settings.conf")
-        bot_owner = config.get("auth", "owner")
-
-        conn = await aiosqlite.connect(self.db_file)
-        c = await conn.cursor()
-
+        bot_owner = config.owner
         target_channel = ctx.channel.name
 
-        await c.execute("SELECT owner FROM channel_configs WHERE channel_name = ?", (target_channel,))
-        channel_config = await c.fetchone()
-
-        if channel_config is None:
+        ch_auth = await self.db.get_channel_auth(target_channel)
+        if ch_auth is None:
             await ctx.send(f"Channel {target_channel} not found in database.")
-            await conn.close()
             return
 
-        channel_owner = channel_config[0]
-
-        if ctx.author.name != bot_owner and ctx.author.name != channel_owner:
+        if ctx.author.name != bot_owner and ctx.author.name != ch_auth[0]:
             await ctx.send("You do not have permission to change the TTS reward command for this channel.")
-            await conn.close()
             return
 
-        if new_value.lower() == "none" or new_value.lower() == "off":
-            reward_val = ""
-        else:
-            reward_val = new_value
-
-        await c.execute("UPDATE channel_configs SET tts_reward = ? WHERE channel_name = ?", (reward_val, target_channel))
-        await conn.commit()
-        await conn.close()
+        reward_val = "" if new_value.lower() in ("none", "off") else new_value
+        await self.db.set_channel_field(target_channel, "tts_reward", reward_val)
 
         if reward_val:
             await ctx.send(f"TTS Channel Point reward set to '{reward_val}' for channel {target_channel}.")
@@ -461,30 +292,19 @@ async def mockbot_command(self, ctx, setting=None, new_value=None, **kwargs):
 
 
 async def _check_custom_auth(self, ctx):
-    """Helper to check if user is admin/trusted for custom command management."""
-    config = configparser.ConfigParser()
-    config.read("settings.conf")
-    bot_owner = config.get("auth", "owner")
-    
-    if ctx.author.name == bot_owner:
+    if ctx.author.name == config.owner:
         return True
-        
-    async with aiosqlite.connect(self.db_file) as conn:
-        c = await conn.cursor()
-        await c.execute("SELECT owner, trusted_users FROM channel_configs WHERE channel_name = ?", (ctx.channel.name,))
-        row = await c.fetchone()
-        if not row:
-            return False
-            
-        channel_owner, trusted_users_str = row
-        if ctx.author.name == channel_owner:
-            return True
-            
-        trusted_users = trusted_users_str.split(",") if trusted_users_str else []
-        if ctx.author.name in trusted_users:
-            return True
-            
-    return False
+
+    row = await self.db.get_channel_auth(ctx.channel.name)
+    if not row:
+        return False
+
+    channel_owner, trusted_users_str = row
+    if ctx.author.name == channel_owner:
+        return True
+
+    trusted_users = [u for u in (trusted_users_str or "").split(",") if u]
+    return ctx.author.name in trusted_users
 
 async def mockbot_addc(self, ctx, cmd_name: str, *, response_template: str):
     if not await _check_custom_auth(self, ctx):
@@ -496,13 +316,7 @@ async def mockbot_addc(self, ctx, cmd_name: str, *, response_template: str):
         cmd_name = f"!{cmd_name}"
         
     try:
-        async with aiosqlite.connect(self.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute(
-                "INSERT INTO custom_commands (channel_name, command_name, response_template) VALUES (?, ?, ?)",
-                (ctx.channel.name, cmd_name, response_template)
-            )
-            await conn.commit()
+        await self.db.insert_command(ctx.channel.name, cmd_name, response_template)
         await ctx.send(f"Command {cmd_name} added successfully!")
     except sqlite3.IntegrityError:
         await ctx.send(f"Command {cmd_name} already exists. Use !editc to change it.")
@@ -519,17 +333,11 @@ async def mockbot_editc(self, ctx, cmd_name: str, *, response_template: str):
         cmd_name = f"!{cmd_name}"
         
     try:
-        async with aiosqlite.connect(self.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute(
-                "UPDATE custom_commands SET response_template = ? WHERE channel_name = ? AND command_name = ?",
-                (response_template, ctx.channel.name, cmd_name)
-            )
-            if c.rowcount > 0:
-                await ctx.send(f"Command {cmd_name} updated successfully!")
-            else:
-                await ctx.send(f"Command {cmd_name} not found.")
-            await conn.commit()
+        updated = await self.db.update_command(ctx.channel.name, cmd_name, response_template)
+        if updated:
+            await ctx.send(f"Command {cmd_name} updated successfully!")
+        else:
+            await ctx.send(f"Command {cmd_name} not found.")
     except Exception as e:
         await ctx.send(f"Error updating command: {e}")
 
@@ -543,17 +351,11 @@ async def mockbot_delc(self, ctx, cmd_name: str):
         cmd_name = f"!{cmd_name}"
         
     try:
-        async with aiosqlite.connect(self.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute(
-                "DELETE FROM custom_commands WHERE channel_name = ? AND command_name = ?",
-                (ctx.channel.name, cmd_name)
-            )
-            if c.rowcount > 0:
-                await ctx.send(f"Command {cmd_name} deleted successfully!")
-            else:
-                await ctx.send(f"Command {cmd_name} not found.")
-            await conn.commit()
+        deleted = await self.db.delete_command(ctx.channel.name, cmd_name)
+        if deleted:
+            await ctx.send(f"Command {cmd_name} deleted successfully!")
+        else:
+            await ctx.send(f"Command {cmd_name} not found.")
     except Exception as e:
         await ctx.send(f"Error deleting command: {e}")
 
@@ -571,49 +373,27 @@ async def mockbot_grammar(self, ctx, action: str, rule: str, *, text: str = ""):
         
     try:
         import json
-        async with aiosqlite.connect(self.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute(
-                "SELECT options_json FROM custom_grammar WHERE channel_name = ? AND rule_name = ?",
-                (ctx.channel.name, rule)
-            )
-            row = await c.fetchone()
-            options = json.loads(row[0]) if row else []
-            
-            if action == 'add':
-                if not text:
-                    await ctx.send("Please provide text to add to the rule.")
-                    return
-                options.append(text)
-                options_str = json.dumps(options)
-                
-                if row:
-                    await c.execute(
-                        "UPDATE custom_grammar SET options_json = ? WHERE channel_name = ? AND rule_name = ?",
-                        (options_str, ctx.channel.name, rule)
-                    )
-                else:
-                    await c.execute(
-                        "INSERT INTO custom_grammar (channel_name, rule_name, options_json) VALUES (?, ?, ?)",
-                        (ctx.channel.name, rule, options_str)
-                    )
-                await conn.commit()
-                await ctx.send(f"Added '{text}' to rule #{rule}#.")
-                
-            elif action == 'list':
-                if not options:
-                    await ctx.send(f"Rule #{rule}# has no options.")
-                else:
-                    items = ", ".join(f"'{o}'" for o in options)
-                    await ctx.send(f"Rule #{rule}# options: {items}")
-                    
-            elif action == 'clear':
-                await c.execute(
-                    "DELETE FROM custom_grammar WHERE channel_name = ? AND rule_name = ?",
-                    (ctx.channel.name, rule)
-                )
-                await conn.commit()
-                await ctx.send(f"Rule #{rule}# cleared.")
+        options_json_str = await self.db.get_grammar_rule(ctx.channel.name, rule)
+        options = json.loads(options_json_str) if options_json_str else []
+
+        if action == 'add':
+            if not text:
+                await ctx.send("Please provide text to add to the rule.")
+                return
+            options.append(text)
+            await self.db.upsert_grammar_rule(ctx.channel.name, rule, json.dumps(options))
+            await ctx.send(f"Added '{text}' to rule #{rule}#.")
+
+        elif action == 'list':
+            if not options:
+                await ctx.send(f"Rule #{rule}# has no options.")
+            else:
+                items = ", ".join(f"'{o}'" for o in options)
+                await ctx.send(f"Rule #{rule}# options: {items}")
+
+        elif action == 'clear':
+            await self.db.delete_grammar_rule(ctx.channel.name, rule)
+            await ctx.send(f"Rule #{rule}# cleared.")
     except Exception as e:
         await ctx.send(f"Error managing grammar: {e}")
 
@@ -666,9 +446,7 @@ async def mockbot_poll(self, ctx, *args):
             
         broadcaster = users[0]
         
-        config = configparser.ConfigParser()
-        config.read("settings.conf")
-        token = config.get("auth", "tmi_token")
+        token = config.tmi_token
         if token.startswith("oauth:"):
             token = token[6:]
 
@@ -698,90 +476,62 @@ async def mockbot_timer(self, ctx, *args):
     channel_name = ctx.channel.name
 
     try:
-        import sqlite3
-        import aiosqlite
-        async with aiosqlite.connect(self.db_file) as conn:
-            c = await conn.cursor()
+        if subcmd == 'add':
+            if len(args) < 3:
+                await ctx.send("Usage: !mockbot timer add <pool_name> <interval_minutes>")
+                return
+            pool_name = args[1].lower()
+            try:
+                interval = int(args[2])
+            except ValueError:
+                await ctx.send("Error: Interval must be a number of minutes.")
+                return
 
-            if subcmd == 'add':
-                if len(args) < 3:
-                    await ctx.send("Usage: !mockbot timer add <pool_name> <interval_minutes>")
-                    return
-                pool_name = args[1].lower()
-                try:
-                    interval = int(args[2])
-                except ValueError:
-                    await ctx.send("Error: Interval must be a number of minutes.")
-                    return
+            try:
+                await self.db.insert_timed_pool(channel_name, pool_name, interval)
+                await ctx.send(f"Created timer pool '{pool_name}' (Interval: {interval}m).")
+            except sqlite3.IntegrityError:
+                await ctx.send(f"Error: Timer pool '{pool_name}' already exists.")
 
-                try:
-                    await c.execute(
-                        "INSERT INTO timed_message_pools (channel_name, pool_name, interval_minutes) VALUES (?, ?, ?)",
-                        (channel_name, pool_name, interval)
-                    )
-                    await conn.commit()
-                    await ctx.send(f"Created timer pool '{pool_name}' (Interval: {interval}m).")
-                except sqlite3.IntegrityError:
-                    await ctx.send(f"Error: Timer pool '{pool_name}' already exists.")
-
-            elif subcmd == 'del':
-                if len(args) < 2:
-                    await ctx.send("Usage: !mockbot timer del <pool_name>")
-                    return
-                pool_name = args[1].lower()
-                await c.execute(
-                    "DELETE FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?",
-                    (channel_name, pool_name)
-                )
-                if c.rowcount > 0:
-                    await conn.commit()
-                    await ctx.send(f"Deleted timer pool '{pool_name}'.")
-                else:
-                    await ctx.send(f"Error: Timer pool '{pool_name}' not found.")
-
-            elif subcmd == 'msg':
-                if len(args) < 3:
-                    await ctx.send("Usage: !mockbot timer msg <pool_name> <message...>")
-                    return
-                pool_name = args[1].lower()
-                message_text = " ".join(args[2:])
-
-                # Verify pool exists
-                await c.execute(
-                    "SELECT 1 FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?", 
-                    (channel_name, pool_name)
-                )
-                if not await c.fetchone():
-                    await ctx.send(f"Error: Timer pool '{pool_name}' not found. Create it first with 'timer add'.")
-                    return
-
-                await c.execute(
-                    "INSERT INTO timed_messages (pool_name, channel_name, message_text) VALUES (?, ?, ?)",
-                    (pool_name, channel_name, message_text)
-                )
-                await conn.commit()
-                await ctx.send(f"Added message to timer pool '{pool_name}'.")
-
-            elif subcmd == 'list':
-                await c.execute(
-                    "SELECT pool_name, interval_minutes FROM timed_message_pools WHERE channel_name = ?",
-                    (channel_name,)
-                )
-                pools = await c.fetchall()
-
-                if not pools:
-                    await ctx.send(f"No timer pools found for #{channel_name}.")
-                    return
-
-                output_parts = []
-                for p_name, p_int in pools:
-                    await c.execute("SELECT COUNT(*) FROM timed_messages WHERE channel_name = ? AND pool_name = ?", (channel_name, p_name))
-                    msg_count = (await c.fetchone())[0]
-                    output_parts.append(f"{p_name} ({p_int}m, {msg_count} msgs)")
-                
-                await ctx.send(f"Timer Pools: " + " | ".join(output_parts))
+        elif subcmd == 'del':
+            if len(args) < 2:
+                await ctx.send("Usage: !mockbot timer del <pool_name>")
+                return
+            pool_name = args[1].lower()
+            if await self.db.delete_timed_pool(channel_name, pool_name):
+                await ctx.send(f"Deleted timer pool '{pool_name}'.")
             else:
-                await ctx.send(f"Unknown timer subcommand: {subcmd}. Use add, del, msg, or list.")
+                await ctx.send(f"Error: Timer pool '{pool_name}' not found.")
+
+        elif subcmd == 'msg':
+            if len(args) < 3:
+                await ctx.send("Usage: !mockbot timer msg <pool_name> <message...>")
+                return
+            pool_name = args[1].lower()
+            message_text = " ".join(args[2:])
+
+            if not await self.db.pool_exists(channel_name, pool_name):
+                await ctx.send(f"Error: Timer pool '{pool_name}' not found. Create it first with 'timer add'.")
+                return
+
+            await self.db.add_pool_message(channel_name, pool_name, message_text)
+            await ctx.send(f"Added message to timer pool '{pool_name}'.")
+
+        elif subcmd == 'list':
+            pools = await self.db.get_timed_pools(channel_name)
+
+            if not pools:
+                await ctx.send(f"No timer pools found for #{channel_name}.")
+                return
+
+            output_parts = []
+            for p_name, p_int in pools:
+                msg_count = await self.db.count_pool_messages(channel_name, p_name)
+                output_parts.append(f"{p_name} ({p_int}m, {msg_count} msgs)")
+
+            await ctx.send("Timer Pools: " + " | ".join(output_parts))
+        else:
+            await ctx.send(f"Unknown timer subcommand: {subcmd}. Use add, del, msg, or list.")
 
     except Exception as e:
         await ctx.send(f"Timer Error: {e}")
@@ -793,13 +543,7 @@ async def mockbot_var(self, ctx, subcmd, var_name, value=""):
     # Check permissions
     is_authorized = False
     if hasattr(ctx.author, 'name'):
-        bot_owner = ""
-        try:
-            import configparser
-            config = configparser.ConfigParser()
-            config.read("settings.conf")
-            bot_owner = config.get("auth", "owner", fallback="").lower()
-        except: pass
+        bot_owner = config.owner.lower()
         
         is_owner = ctx.author.name.lower() == bot_owner
         is_mod = getattr(ctx.author, 'is_mod', False)
@@ -809,59 +553,31 @@ async def mockbot_var(self, ctx, subcmd, var_name, value=""):
     if subcmd in ['set', 'add'] and not is_authorized:
         await ctx.send("You do not have permission to modify variables.")
         return
-        
+
     try:
-        import aiosqlite
-        async with aiosqlite.connect(self.db_file) as conn:
-            c = await conn.cursor()
-            
-            if subcmd == 'get':
-                await c.execute(
-                    "SELECT var_value FROM channel_variables WHERE channel_name = ? AND var_name = ?",
-                    (channel_name, var_name)
-                )
-                row = await c.fetchone()
-                val = row[0] if row else 0
-                await ctx.send(f"Variable '{var_name}' is currently: {val}")
-                
-            elif subcmd == 'set':
-                try:
-                    val_int = int(value)
-                except ValueError:
-                    await ctx.send("Value must be an integer.")
-                    return
-                
-                await c.execute(
-                    "INSERT INTO channel_variables (channel_name, var_name, var_value) VALUES (?, ?, ?) "
-                    "ON CONFLICT(channel_name, var_name) DO UPDATE SET var_value = ?",
-                    (channel_name, var_name, val_int, val_int)
-                )
-                await conn.commit()
-                await ctx.send(f"Variable '{var_name}' set to {val_int}.")
-                
-            elif subcmd == 'add':
-                try:
-                    val_int = int(value) if value.strip() else 1
-                except ValueError:
-                    val_int = 1 # default to adding 1 if no value is provided
-                
-                await c.execute(
-                    "INSERT INTO channel_variables (channel_name, var_name, var_value) VALUES (?, ?, ?) "
-                    "ON CONFLICT(channel_name, var_name) DO UPDATE SET var_value = var_value + ?",
-                    (channel_name, var_name, val_int, val_int)
-                )
-                await conn.commit()
-                
-                # Fetch new value
-                await c.execute(
-                    "SELECT var_value FROM channel_variables WHERE channel_name = ? AND var_name = ?",
-                    (channel_name, var_name)
-                )
-                new_val = (await c.fetchone())[0]
-                await ctx.send(f"Added {val_int} to '{var_name}'. New value: {new_val}")
-                
-            else:
-                await ctx.send(f"Unknown var subcommand: {subcmd}. Use set, add, or get.")
-                
+        if subcmd == 'get':
+            val = await self.db.get_variable(channel_name, var_name)
+            await ctx.send(f"Variable '{var_name}' is currently: {val}")
+
+        elif subcmd == 'set':
+            try:
+                val_int = int(value)
+            except ValueError:
+                await ctx.send("Value must be an integer.")
+                return
+            await self.db.set_variable(channel_name, var_name, val_int)
+            await ctx.send(f"Variable '{var_name}' set to {val_int}.")
+
+        elif subcmd == 'add':
+            try:
+                val_int = int(value) if value.strip() else 1
+            except ValueError:
+                val_int = 1
+            new_val = await self.db.increment_variable(channel_name, var_name, val_int)
+            await ctx.send(f"Added {val_int} to '{var_name}'. New value: {new_val}")
+
+        else:
+            await ctx.send(f"Unknown var subcommand: {subcmd}. Use set, add, or get.")
+
     except Exception as e:
         await ctx.send(f"Variable Error: {e}")

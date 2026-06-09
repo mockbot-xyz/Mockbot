@@ -1,8 +1,8 @@
 import argparse
-import configparser
 from threading import Thread
 from bot.core import setup_bot
 from bot.db import ensure_db_setup
+from bot.config import config as _cfg
 import os
 try:
     import torch # Keep torch import for TTS check
@@ -103,14 +103,12 @@ def main():
 
         # Pre-flight Token Check
         import requests
-        config = configparser.ConfigParser()
-        config.read('settings.conf')
         # Load TTS defaults from configuration file into environment
-        if config.has_section('tts'):
-            if config.has_option('tts', 'rvc_api_url') and "RVC_API_URL" not in os.environ:
-                os.environ["RVC_API_URL"] = config.get('tts', 'rvc_api_url')
+        if _cfg.has_section('tts'):
+            if _cfg.has_option('tts', 'rvc_api_url') and "RVC_API_URL" not in os.environ:
+                os.environ["RVC_API_URL"] = _cfg.get('tts', 'rvc_api_url')
 
-        token = config.get('auth', 'tmi_token', fallback='').replace('oauth:', '')
+        token = (_cfg.tmi_token or '').replace('oauth:', '')
         
         if token:
             print("Verifying token...", end='', flush=True)

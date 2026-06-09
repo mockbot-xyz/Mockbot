@@ -730,24 +730,22 @@ class MockbotDashboard(App):
             
         clean_name = self.current_context.lstrip('#')
         try:
-            import aiosqlite
-            async with aiosqlite.connect(self.bot.db_file) as conn:
-                c = await conn.cursor()
-                await c.execute("SELECT voice_enabled, tts_enabled, join_channel, time_between_messages, random_chance, use_general_model FROM channel_configs WHERE channel_name = ?", (clean_name,))
-                row = await c.fetchone()
-                
-                if row:
-                    voice, tts, jn, time_b, chance, model = row
-                    t_str = "[green]ON[/]" if tts else "[red]OFF[/]"
-                    v_str = "[green]ON[/]" if voice else "[red]OFF[/]"
-                    m_str = "[green]General[/]" if model else "[magenta]Indiv[/]"
-                    c_str = f"[cyan]{chance}%[/]"
-                    is_joined = "🟢" if f"#{clean_name}" in self.bot._joined_channels else "🔴"
-                    
-                    status_text = f"{is_joined} [bold]#{clean_name}[/bold] | Model: {m_str} | TTS: {t_str} | Voice: {v_str} | Chance: {c_str} | Delay: {time_b}s | [dim]http://localhost:5050/overlay/{clean_name}[/dim]"
-                    self.query_one("#status_bar").update(status_text)
-                else:
-                    self.query_one("#status_bar").update(f"🔴 [bold]#{clean_name}[/bold] | (Not in Database)")
+            cfg = await self.bot.db.get_channel_config(clean_name)
+            if cfg:
+                voice = cfg.get("voice_enabled")
+                tts = cfg.get("tts_enabled")
+                time_b = cfg.get("time_between_messages", 0)
+                chance = cfg.get("random_chance", 0.0)
+                model = cfg.get("use_general_model")
+                t_str = "[green]ON[/]" if tts else "[red]OFF[/]"
+                v_str = "[green]ON[/]" if voice else "[red]OFF[/]"
+                m_str = "[green]General[/]" if model else "[magenta]Indiv[/]"
+                c_str = f"[cyan]{chance}%[/]"
+                is_joined = "🟢" if f"#{clean_name}" in self.bot._joined_channels else "🔴"
+                status_text = f"{is_joined} [bold]#{clean_name}[/bold] | Model: {m_str} | TTS: {t_str} | Voice: {v_str} | Chance: {c_str} | Delay: {time_b}s | [dim]http://localhost:5050/overlay/{clean_name}[/dim]"
+                self.query_one("#status_bar").update(status_text)
+            else:
+                self.query_one("#status_bar").update(f"🔴 [bold]#{clean_name}[/bold] | (Not in Database)")
         except Exception:
             pass
 
@@ -875,15 +873,9 @@ class MockbotDashboard(App):
                         if getattr(self.bot, 'enable_tts', False):
                             # Check channel configs for TTS settings
                             try:
-                                import sqlite3
-                                conn = sqlite3.connect(self.bot.db_file)
-                                c = conn.cursor()
-                                c.execute("SELECT tts_enabled, tts_delay_enabled FROM channel_configs WHERE channel_name = ?", (channel_name,))
-                                row = c.fetchone()
-                                conn.close()
-                                
-                                tts_enabled = bool(row[0]) if row else False
-                                tts_delay_enabled = bool(row[1]) if row else False
+                                tts_cfg_sync = self.bot.db.get_tts_config_sync(channel_name)
+                                tts_enabled = tts_cfg_sync.get("tts_enabled", False)
+                                tts_delay_enabled = tts_cfg_sync.get("tts_delay_enabled", False)
                                 
                                 if tts_enabled:
                                     from bot.tts import start_tts_processing
@@ -1077,58 +1069,42 @@ class MockbotDashboard(App):
             column = 'trusted_users' if cmd in ['trust', 'untrust'] else 'ignored_users'
             is_add = cmd in ['trust', 'ignore']
             
-            db_file = self.bot.db_file
             try:
-                import aiosqlite
-                async with aiosqlite.connect(db_file) as conn:
-                    c = await conn.cursor()
-                    
-                    if self.current_context == "Global":
-                        # Apply across ALL channels
-                        await c.execute(f"SELECT channel_name, {column} FROM channel_configs")
-                        rows = await c.fetchall()
-                        updated = 0
-                        for ch_name, current_val in rows:
-                            user_list = [u.strip() for u in (current_val or "").split(',') if u.strip()]
-                            if is_add and username not in user_list:
-                                user_list.append(username)
-                                updated += 1
-                            elif not is_add and username in user_list:
-                                user_list.remove(username)
-                                updated += 1
-                            new_val = ",".join(user_list)
-                            await c.execute(f"UPDATE channel_configs SET {column} = ? WHERE channel_name = ?", (new_val, ch_name))
-                        await conn.commit()
-                        action = "Added" if is_add else "Removed"
-                        prep = "to" if is_add else "from"
-                        self._cmd_log(f"[bold green]{action}[/bold green] {username} {prep} {column} globally ({updated} channels updated).")
-                    else:
-                        # Apply to current channel only
-                        clean_name = self.current_context.lstrip('#')
-                        await c.execute(f"SELECT {column} FROM channel_configs WHERE channel_name = ?", (clean_name,))
-                        row = await c.fetchone()
-                        if row is None:
-                            self._cmd_log(f"[bold red]Error:[/bold red] Channel {clean_name} not found in database.")
-                            return
-                        
-                        user_list = [u.strip() for u in (row[0] or "").split(',') if u.strip()]
-                        
-                        if is_add:
-                            if username not in user_list:
-                                user_list.append(username)
-                                self._cmd_log(f"[bold green]Added[/bold green] {username} to {column} for {self.current_context}.")
-                            else:
-                                self._cmd_log(f"User {username} is already in {column} for {self.current_context}.")
+                if self.current_context == "Global":
+                    rows = await self.bot.db.get_all_channels_field(column)
+                    updated = 0
+                    for ch_name, current_val in rows:
+                        user_list = [u.strip() for u in (current_val or "").split(',') if u.strip()]
+                        if is_add and username not in user_list:
+                            user_list.append(username)
+                            updated += 1
+                        elif not is_add and username in user_list:
+                            user_list.remove(username)
+                            updated += 1
+                        await self.bot.db.set_channel_field(ch_name, column, ",".join(user_list))
+                    action = "Added" if is_add else "Removed"
+                    prep = "to" if is_add else "from"
+                    self._cmd_log(f"[bold green]{action}[/bold green] {username} {prep} {column} globally ({updated} channels updated).")
+                else:
+                    clean_name = self.current_context.lstrip('#')
+                    current_val = await self.bot.db.get_channel_field(clean_name, column)
+                    if current_val is None:
+                        self._cmd_log(f"[bold red]Error:[/bold red] Channel {clean_name} not found in database.")
+                        return
+                    user_list = [u.strip() for u in (current_val or "").split(',') if u.strip()]
+                    if is_add:
+                        if username not in user_list:
+                            user_list.append(username)
+                            self._cmd_log(f"[bold green]Added[/bold green] {username} to {column} for {self.current_context}.")
                         else:
-                            if username in user_list:
-                                user_list.remove(username)
-                                self._cmd_log(f"[bold green]Removed[/bold green] {username} from {column} for {self.current_context}.")
-                            else:
-                                self._cmd_log(f"User {username} is not in {column} for {self.current_context}.")
-                                
-                        new_val = ",".join(user_list)
-                        await c.execute(f"UPDATE channel_configs SET {column} = ? WHERE channel_name = ?", (new_val, clean_name))
-                        await conn.commit()
+                            self._cmd_log(f"User {username} is already in {column} for {self.current_context}.")
+                    else:
+                        if username in user_list:
+                            user_list.remove(username)
+                            self._cmd_log(f"[bold green]Removed[/bold green] {username} from {column} for {self.current_context}.")
+                        else:
+                            self._cmd_log(f"User {username} is not in {column} for {self.current_context}.")
+                    await self.bot.db.set_channel_field(clean_name, column, ",".join(user_list))
                 self.bot.load_channel_settings()
             except Exception as e:
                 self._cmd_log(f"[bold red]Database Error:[/bold red] {e}")
@@ -1138,47 +1114,40 @@ class MockbotDashboard(App):
                 self._cmd_log("Bot instance not connected.")
                 return
             try:
-                import aiosqlite
                 from rich.table import Table
                 from rich import box
-                async with aiosqlite.connect(self.bot.db_file) as conn:
-                    c = await conn.cursor()
-                    if self.current_context == "Global":
-                        await c.execute("SELECT channel_name, ignored_users FROM channel_configs WHERE join_channel = 1 ORDER BY channel_name")
-                    else:
-                        clean_name = self.current_context.lstrip('#')
-                        await c.execute("SELECT channel_name, ignored_users FROM channel_configs WHERE channel_name = ?", (clean_name,))
-                    rows = await c.fetchall()
-                    
-                    # Collect unique ignored users across all channels
-                    all_ignored = set()
-                    per_channel = {}
-                    for ch, ignored_str in rows:
-                        users = [u.strip() for u in (ignored_str or "").split(',') if u.strip()]
-                        per_channel[ch] = users
-                        all_ignored.update(users)
-                    
-                    if not all_ignored:
-                        self._cmd_log("[dim]No ignored users found.[/dim]")
-                        return
-                    
-                    table = Table(
-                        title="Ignored Users",
-                        title_style="bold cyan",
-                        box=box.ROUNDED,
-                        border_style="dim",
-                        header_style="bold white",
-                        padding=(0, 1),
-                    )
-                    table.add_column("Channel", justify="left")
-                    table.add_column("Ignored Users", justify="left")
-                    
-                    for ch, users in per_channel.items():
-                        if users:
-                            users_str = ", ".join(f"[yellow]{u}[/]" for u in sorted(users))
-                            table.add_row(f"#{ch}", users_str)
-                    
-                    self._cmd_log(table)
+                channel_filter = None if self.current_context == "Global" else self.current_context.lstrip('#')
+                rows = await self.bot.db.get_all_ignored_users(channel_filter)
+
+                # Collect unique ignored users across all channels
+                all_ignored = set()
+                per_channel = {}
+                for ch, ignored_str in rows:
+                    users = [u.strip() for u in (ignored_str or "").split(',') if u.strip()]
+                    per_channel[ch] = users
+                    all_ignored.update(users)
+
+                if not all_ignored:
+                    self._cmd_log("[dim]No ignored users found.[/dim]")
+                    return
+
+                table = Table(
+                    title="Ignored Users",
+                    title_style="bold cyan",
+                    box=box.ROUNDED,
+                    border_style="dim",
+                    header_style="bold white",
+                    padding=(0, 1),
+                )
+                table.add_column("Channel", justify="left")
+                table.add_column("Ignored Users", justify="left")
+
+                for ch, users in per_channel.items():
+                    if users:
+                        users_str = ", ".join(f"[yellow]{u}[/]" for u in sorted(users))
+                        table.add_row(f"#{ch}", users_str)
+
+                self._cmd_log(table)
             except Exception as e:
                 self._cmd_log(f"[bold red]Database Error:[/bold red] {e}")
 
@@ -1202,10 +1171,7 @@ class MockbotDashboard(App):
             try:
                 success = await self.bot.leave_channel(target)
                 if success:
-                    import aiosqlite
-                    async with aiosqlite.connect(self.bot.db_file) as conn:
-                        await conn.execute("UPDATE channel_configs SET join_channel = 0 WHERE channel_name = ?", (target,))
-                        await conn.commit()
+                    await self.bot.db.set_channel_field(target, "join_channel", 0)
                     self._cmd_log(f"[bold green]Left channel:[/bold green] #{target}")
                     self.update_sidebar()
                 else:
@@ -1224,14 +1190,7 @@ class MockbotDashboard(App):
             
             try:
                 import sqlite3
-                import aiosqlite
-                async with aiosqlite.connect(self.bot.db_file) as conn:
-                    c = await conn.cursor()
-                    await c.execute(
-                        "INSERT INTO custom_commands (channel_name, command_name, response_template) VALUES (?, ?, ?)",
-                        (target_chan, cmd_name, response)
-                    )
-                    await conn.commit()
+                await self.bot.db.insert_command(target_chan, cmd_name, response)
                 self._cmd_log(f"[bold green]Added[/bold green] {cmd_name} to {target_chan}.")
             except sqlite3.IntegrityError:
                 self._cmd_log(f"[bold red]Error:[/bold red] Command {cmd_name} already exists. Use editc.")
@@ -1248,18 +1207,11 @@ class MockbotDashboard(App):
             target_chan = 'global' if self.current_context == 'Global' else self.current_context.lstrip('#')
             
             try:
-                import aiosqlite
-                async with aiosqlite.connect(self.bot.db_file) as conn:
-                    c = await conn.cursor()
-                    await c.execute(
-                        "UPDATE custom_commands SET response_template = ? WHERE channel_name = ? AND command_name = ?",
-                        (response, target_chan, cmd_name)
-                    )
-                    if c.rowcount > 0:
-                        self._cmd_log(f"[bold green]Updated[/bold green] {cmd_name} in {target_chan}.")
-                    else:
-                        self._cmd_log(f"[bold red]Error:[/bold red] Command {cmd_name} not found in {target_chan}.")
-                    await conn.commit()
+                updated = await self.bot.db.update_command(target_chan, cmd_name, response)
+                if updated:
+                    self._cmd_log(f"[bold green]Updated[/bold green] {cmd_name} in {target_chan}.")
+                else:
+                    self._cmd_log(f"[bold red]Error:[/bold red] Command {cmd_name} not found in {target_chan}.")
             except Exception as e:
                 self._cmd_log(f"[bold red]Error:[/bold red] {e}")
 
@@ -1270,20 +1222,13 @@ class MockbotDashboard(App):
             cmd_name = args[0].lower()
             if not cmd_name.startswith('!'): cmd_name = f"!{cmd_name}"
             target_chan = 'global' if self.current_context == 'Global' else self.current_context.lstrip('#')
-            
+
             try:
-                import aiosqlite
-                async with aiosqlite.connect(self.bot.db_file) as conn:
-                    c = await conn.cursor()
-                    await c.execute(
-                        "DELETE FROM custom_commands WHERE channel_name = ? AND command_name = ?",
-                        (target_chan, cmd_name)
-                    )
-                    if c.rowcount > 0:
-                        self._cmd_log(f"[bold green]Deleted[/bold green] {cmd_name} from {target_chan}.")
-                    else:
-                        self._cmd_log(f"[bold red]Error:[/bold red] Command {cmd_name} not found in {target_chan}.")
-                    await conn.commit()
+                deleted = await self.bot.db.delete_command(target_chan, cmd_name)
+                if deleted:
+                    self._cmd_log(f"[bold green]Deleted[/bold green] {cmd_name} from {target_chan}.")
+                else:
+                    self._cmd_log(f"[bold red]Error:[/bold red] Command {cmd_name} not found in {target_chan}.")
             except Exception as e:
                 self._cmd_log(f"[bold red]Error:[/bold red] {e}")
 
@@ -1297,93 +1242,62 @@ class MockbotDashboard(App):
             
             try:
                 import sqlite3
-                import aiosqlite
-                async with aiosqlite.connect(self.bot.db_file) as conn:
-                    c = await conn.cursor()
-                    
-                    if subcmd == 'add':
-                        if len(args) < 3:
-                            self._cmd_log("Usage: timer add <pool_name> <interval_minutes>")
-                            return
-                        pool_name = args[1].lower()
-                        try:
-                            interval = int(args[2])
-                        except ValueError:
-                            self._cmd_log("[bold red]Error:[/bold red] Interval must be a number of minutes.")
-                            return
-                            
-                        try:
-                            await c.execute(
-                                "INSERT INTO timed_message_pools (channel_name, pool_name, interval_minutes) VALUES (?, ?, ?)",
-                                (target_chan, pool_name, interval)
-                            )
-                            await conn.commit()
-                            self._cmd_log(f"[bold green]Created timer pool[/bold green] '{pool_name}' for {target_chan} (Interval: {interval}m).")
-                        except sqlite3.IntegrityError:
-                            self._cmd_log(f"[bold red]Error:[/bold red] Timer pool '{pool_name}' already exists in {target_chan}.")
-                            
-                    elif subcmd == 'del':
-                        if len(args) < 2:
-                            self._cmd_log("Usage: timer del <pool_name>")
-                            return
-                        pool_name = args[1].lower()
-                        await c.execute(
-                            "DELETE FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?",
-                            (target_chan, pool_name)
-                        )
-                        if c.rowcount > 0:
-                            await conn.commit()
-                            self._cmd_log(f"[bold green]Deleted timer pool[/bold green] '{pool_name}' from {target_chan}.")
-                        else:
-                            self._cmd_log(f"[bold red]Error:[/bold red] Timer pool '{pool_name}' not found in {target_chan}.")
-                            
-                    elif subcmd == 'msg':
-                        if len(args) < 3:
-                            self._cmd_log("Usage: timer msg <pool_name> <message...>")
-                            return
-                        pool_name = args[1].lower()
-                        message_text = " ".join(args[2:])
-                        
-                        # Verify pool exists
-                        await c.execute("SELECT 1 FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?", (target_chan, pool_name))
-                        if not await c.fetchone():
-                            self._cmd_log(f"[bold red]Error:[/bold red] Timer pool '{pool_name}' not found in {target_chan}. Create it first with 'timer add'.")
-                            return
-                            
-                        await c.execute(
-                            "INSERT INTO timed_messages (pool_name, channel_name, message_text) VALUES (?, ?, ?)",
-                            (pool_name, target_chan, message_text)
-                        )
-                        await conn.commit()
-                        self._cmd_log(f"[bold green]Added message[/bold green] to timer pool '{pool_name}' in {target_chan}.")
-                        
-                    elif subcmd == 'list':
-                        await c.execute(
-                            "SELECT pool_name, interval_minutes FROM timed_message_pools WHERE channel_name = ?",
-                            (target_chan,)
-                        )
-                        pools = await c.fetchall()
-                        
-                        if not pools:
-                            self._cmd_log(f"No timer pools found for {target_chan}.")
-                            return
-                            
-                        from rich.table import Table
-                        from rich import box
-                        table = Table(title=f"Timer Pools ({target_chan})", box=box.ROUNDED)
-                        table.add_column("Pool Name", style="cyan")
-                        table.add_column("Interval (m)", justify="right")
-                        table.add_column("Messages", justify="right")
-                        
-                        for p_name, p_int in pools:
-                            await c.execute("SELECT COUNT(*) FROM timed_messages WHERE channel_name = ? AND pool_name = ?", (target_chan, p_name))
-                            msg_count = (await c.fetchone())[0]
-                            table.add_row(p_name, str(p_int), str(msg_count))
-                            
-                        self._cmd_log(table)
+                if subcmd == 'add':
+                    if len(args) < 3:
+                        self._cmd_log("Usage: timer add <pool_name> <interval_minutes>")
+                        return
+                    pool_name = args[1].lower()
+                    try:
+                        interval = int(args[2])
+                    except ValueError:
+                        self._cmd_log("[bold red]Error:[/bold red] Interval must be a number of minutes.")
+                        return
+                    try:
+                        await self.bot.db.insert_timed_pool(target_chan, pool_name, interval)
+                        self._cmd_log(f"[bold green]Created timer pool[/bold green] '{pool_name}' for {target_chan} (Interval: {interval}m).")
+                    except sqlite3.IntegrityError:
+                        self._cmd_log(f"[bold red]Error:[/bold red] Timer pool '{pool_name}' already exists in {target_chan}.")
+
+                elif subcmd == 'del':
+                    if len(args) < 2:
+                        self._cmd_log("Usage: timer del <pool_name>")
+                        return
+                    pool_name = args[1].lower()
+                    if await self.bot.db.delete_timed_pool(target_chan, pool_name):
+                        self._cmd_log(f"[bold green]Deleted timer pool[/bold green] '{pool_name}' from {target_chan}.")
                     else:
-                        self._cmd_log(f"Unknown timer subcommand: {subcmd}. Use add, del, msg, or list.")
-                        
+                        self._cmd_log(f"[bold red]Error:[/bold red] Timer pool '{pool_name}' not found in {target_chan}.")
+
+                elif subcmd == 'msg':
+                    if len(args) < 3:
+                        self._cmd_log("Usage: timer msg <pool_name> <message...>")
+                        return
+                    pool_name = args[1].lower()
+                    message_text = " ".join(args[2:])
+                    if not await self.bot.db.pool_exists(target_chan, pool_name):
+                        self._cmd_log(f"[bold red]Error:[/bold red] Timer pool '{pool_name}' not found in {target_chan}. Create it first with 'timer add'.")
+                        return
+                    await self.bot.db.add_pool_message(target_chan, pool_name, message_text)
+                    self._cmd_log(f"[bold green]Added message[/bold green] to timer pool '{pool_name}' in {target_chan}.")
+
+                elif subcmd == 'list':
+                    pools = await self.bot.db.get_timed_pools(target_chan)
+                    if not pools:
+                        self._cmd_log(f"No timer pools found for {target_chan}.")
+                        return
+                    from rich.table import Table
+                    from rich import box
+                    table = Table(title=f"Timer Pools ({target_chan})", box=box.ROUNDED)
+                    table.add_column("Pool Name", style="cyan")
+                    table.add_column("Interval (m)", justify="right")
+                    table.add_column("Messages", justify="right")
+                    for p_name, p_int in pools:
+                        msg_count = await self.bot.db.count_pool_messages(target_chan, p_name)
+                        table.add_row(p_name, str(p_int), str(msg_count))
+                    self._cmd_log(table)
+                else:
+                    self._cmd_log(f"Unknown timer subcommand: {subcmd}. Use add, del, msg, or list.")
+
             except Exception as e:
                 self._cmd_log(f"[bold red]Timer Error:[/bold red] {e}")
 
@@ -1398,30 +1312,21 @@ class MockbotDashboard(App):
             
             try:
                 import json
-                import aiosqlite
-                async with aiosqlite.connect(self.bot.db_file) as conn:
-                    c = await conn.cursor()
-                    await c.execute("SELECT options_json FROM custom_grammar WHERE channel_name = ? AND rule_name = ?", (target_chan, rule))
-                    row = await c.fetchone()
-                    options = json.loads(row[0]) if row else []
-                    
-                    if action == 'add':
-                        if not text:
-                            self._cmd_log("Please provide text.")
-                            return
-                        options.append(text)
-                        if row:
-                            await c.execute("UPDATE custom_grammar SET options_json = ? WHERE channel_name = ? AND rule_name = ?", (json.dumps(options), target_chan, rule))
-                        else:
-                            await c.execute("INSERT INTO custom_grammar (channel_name, rule_name, options_json) VALUES (?, ?, ?)", (target_chan, rule, json.dumps(options)))
-                        self._cmd_log(f"[bold green]Added[/bold green] '{text}' to #{rule}# in {target_chan}.")
-                    elif action == 'list':
-                        if not options: self._cmd_log(f"Rule #{rule}# empty.")
-                        else: self._cmd_log(f"Rule #{rule}# options: {', '.join(options)}")
-                    elif action == 'clear':
-                        await c.execute("DELETE FROM custom_grammar WHERE channel_name = ? AND rule_name = ?", (target_chan, rule))
-                        self._cmd_log(f"[bold green]Cleared[/bold green] rule #{rule}# from {target_chan}.")
-                    await conn.commit()
+                opts_json = await self.bot.db.get_grammar_rule(target_chan, rule)
+                options = json.loads(opts_json) if opts_json else []
+                if action == 'add':
+                    if not text:
+                        self._cmd_log("Please provide text.")
+                        return
+                    options.append(text)
+                    await self.bot.db.upsert_grammar_rule(target_chan, rule, json.dumps(options))
+                    self._cmd_log(f"[bold green]Added[/bold green] '{text}' to #{rule}# in {target_chan}.")
+                elif action == 'list':
+                    if not options: self._cmd_log(f"Rule #{rule}# empty.")
+                    else: self._cmd_log(f"Rule #{rule}# options: {', '.join(options)}")
+                elif action == 'clear':
+                    await self.bot.db.delete_grammar_rule(target_chan, rule)
+                    self._cmd_log(f"[bold green]Cleared[/bold green] rule #{rule}# from {target_chan}.")
             except Exception as e:
                 self._cmd_log(f"[bold red]Error:[/bold red] {e}")
 
@@ -1517,31 +1422,26 @@ class MockbotDashboard(App):
     async def _update_setting(self, column, value):
         if not self.bot:
             return
-            
-        db_file = self.bot.db_file
         try:
-            import aiosqlite
-            async with aiosqlite.connect(db_file) as conn:
-                c = await conn.cursor()
-                if self.current_context == "Global":
-                    await c.execute(f"UPDATE channel_configs SET {column} = ?", (value,))
-                    self.write_log(f"[bold green]Updated[/bold green] {column} globally to {value}")
-                else:
-                    clean_name = self.current_context.lstrip('#')
-                    await c.execute(f"UPDATE channel_configs SET {column} = ? WHERE channel_name = ?", (value, clean_name))
-                    self.write_log(f"[bold green]Updated[/bold green] {column} for {self.current_context} to {value}")
-                await conn.commit()
-            self.bot.load_channel_settings() # Reload settings into memory
-            
-            # Unbind all TTS generation cache locks so they dynamically fetch the new DB rows during next generation
+            if self.current_context == "Global":
+                await self.bot.db.set_channel_field_all(column, value)
+                self.write_log(f"[bold green]Updated[/bold green] {column} globally to {value}")
+            else:
+                clean_name = self.current_context.lstrip('#')
+                await self.bot.db.set_channel_field(clean_name, column, value)
+                self.write_log(f"[bold green]Updated[/bold green] {column} for {self.current_context} to {value}")
+            self.bot.load_channel_settings()
+
+            # Clear per-channel TTS config cache so next generation picks up new values
             try:
                 import bot.tts
-                for func_name in ['get_advanced_tts_configs_cached', 'get_tts_provider_cached', 'get_channel_voice_preset_cached', 'get_voice_enabled_for_channel']:
+                for func_name in ['_get_tts_config_cached', 'get_advanced_tts_configs_cached', 'get_tts_provider_cached', 'get_voice_preset_cached']:
                     func = getattr(bot.tts, func_name, None)
                     if func and hasattr(func, 'cache_clear'):
                         func.cache_clear()
-            except Exception: pass
-            
+            except Exception:
+                pass
+
         except Exception as e:
             self.write_log(f"[bold red]Database Error:[/bold red] {e}")
 
@@ -1565,39 +1465,36 @@ class MockbotDashboard(App):
         # Add channels from the database
         if self.bot:
             try:
-                import aiosqlite
-                async with aiosqlite.connect(self.bot.db_file) as conn:
-                    c = await conn.cursor()
-                    await c.execute("SELECT channel_name FROM channel_configs WHERE join_channel = 1 ORDER BY channel_name")
-                    rows = await c.fetchall()
-                    live_streamers = getattr(self.bot, 'live_streamers', set())
-                    
-                    for row in rows:
-                        clean_name = row[0]
-                        
-                        color_idx = "white"
-                        if hasattr(self.bot, 'my_logger'):
-                            color_idx = self.bot.my_logger.color_manager.get_channel_color(clean_name)
-                        
-                        if isinstance(color_idx, str) and color_idx.isdigit():
-                            chan_style = f"bold color({color_idx})"
-                        else:
-                            chan_style = f"bold {color_idx}"
+                channel_names = await self.bot.db.get_all_join_channels()
+                rows = [(name,) for name in channel_names]
+                live_streamers = getattr(self.bot, 'live_streamers', set())
 
-                        if clean_name.lower() in live_streamers:
-                            status_label = Label("[green][*][/]", classes="channel-status")
-                        else:
-                            status_label = Label("[red][*][/]", classes="channel-status")
-                            
-                        item = ListItem(
-                            Horizontal(
-                                Label(f"#[{chan_style}]{clean_name}[/]", classes="channel-name"),
-                                status_label,
-                                classes="channel-container"
-                            ),
-                            id=f"ctx_{clean_name}"
-                        )
-                        await sidebar.append(item)
+                for row in rows:
+                    clean_name = row[0]
+
+                    color_idx = "white"
+                    if hasattr(self.bot, 'my_logger'):
+                        color_idx = self.bot.my_logger.color_manager.get_channel_color(clean_name)
+
+                    if isinstance(color_idx, str) and color_idx.isdigit():
+                        chan_style = f"bold color({color_idx})"
+                    else:
+                        chan_style = f"bold {color_idx}"
+
+                    if clean_name.lower() in live_streamers:
+                        status_label = Label("[green][*][/]", classes="channel-status")
+                    else:
+                        status_label = Label("[red][*][/]", classes="channel-status")
+
+                    item = ListItem(
+                        Horizontal(
+                            Label(f"#[{chan_style}]{clean_name}[/]", classes="channel-name"),
+                            status_label,
+                            classes="channel-container"
+                        ),
+                        id=f"ctx_{clean_name}"
+                    )
+                    await sidebar.append(item)
             except Exception:
                 pass
                 

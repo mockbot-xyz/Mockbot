@@ -1,4 +1,3 @@
-import aiosqlite
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Button, Input, Label, Static, Select, TextArea
@@ -30,18 +29,16 @@ class LoreManagerScreen(ModalScreen):
     async def load_data(self) -> None:
         self.table.clear()
         if not self.app.bot: return
-        
+
         context = self.app.current_context.lstrip('#')
         enabled_str = ""
         lore_bias_val = 15.0
-        async with aiosqlite.connect(self.app.bot.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute("SELECT enabled_lore, lore_bias FROM channel_configs WHERE channel_name = ?", (context,))
-            row = await c.fetchone()
-            if row:
-                if row[0]: enabled_str = row[0]
-                if len(row) > 1 and row[1] is not None: lore_bias_val = float(row[1])
-                
+        cfg = await self.app.bot.db.get_channel_config(context)
+        if cfg:
+            enabled_str = cfg.get("enabled_lore") or ""
+            lore_bias_raw = cfg.get("lore_bias")
+            if lore_bias_raw is not None:
+                lore_bias_val = float(lore_bias_raw)
         try:
             self.query_one("#lore_bias_input").value = str(lore_bias_val)
         except Exception:
@@ -82,9 +79,7 @@ class LoreManagerScreen(ModalScreen):
                 pass
                 
             context = self.app.current_context.lstrip('#')
-            async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                await conn.execute("UPDATE channel_configs SET enabled_lore = ?, lore_bias = ? WHERE channel_name = ?", (new_enabled_str, lore_bias_val, context))
-                await conn.commit()
+            await self.app.bot.db.set_lore_config(context, new_enabled_str, lore_bias_val)
                 
             self.app.notify(f"Lore updated successfully.")
             self.app.pop_screen()
@@ -128,15 +123,9 @@ class CommandsManagerScreen(ModalScreen):
         context = self.app.current_context.lstrip('#')
         # If Global context, show all global custom commands OR prompt to select a channel. 
         # For simplicity, if global, we might show a channel column.
-        query = "SELECT command_name, response_template FROM custom_commands WHERE channel_name = ?"
-        params = (context,)
-        
-        async with aiosqlite.connect(self.app.bot.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute(query, params)
-            rows = await c.fetchall()
-            for row in rows:
-                self.table.add_row(row[0], row[1], key=row[0])
+        rows = await self.app.bot.db.get_commands(context)
+        for row in rows:
+            self.table.add_row(row[0], row[1], key=row[0])
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cmd_save":
@@ -149,12 +138,7 @@ class CommandsManagerScreen(ModalScreen):
                 name = f"!{name}"
                 
             context = self.app.current_context.lstrip('#')
-            async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                await conn.execute(
-                    "INSERT OR REPLACE INTO custom_commands (channel_name, command_name, response_template) VALUES (?, ?, ?)",
-                    (context, name, resp)
-                )
-                await conn.commit()
+            await self.app.bot.db.upsert_command(context, name, resp)
             
             self.query_one("#cmd_name_input", Input).value = ""
             self.query_one("#cmd_resp_input", Input).value = ""
@@ -166,9 +150,7 @@ class CommandsManagerScreen(ModalScreen):
                 row_key = self.table.coordinate_to_cell_key(self.table.cursor_coordinate).row_key
                 cmd_name = row_key.value
                 context = self.app.current_context.lstrip('#')
-                async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                    await conn.execute("DELETE FROM custom_commands WHERE channel_name = ? AND command_name = ?", (context, cmd_name))
-                    await conn.commit()
+                await self.app.bot.db.delete_command(context, cmd_name)
                 self.app.notify(f"Deleted command: {cmd_name}")
                 await self.load_data()
             except Exception as e:
@@ -177,13 +159,10 @@ class CommandsManagerScreen(ModalScreen):
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         cmd_name = event.row_key.value
         context = self.app.current_context.lstrip('#')
-        async with aiosqlite.connect(self.app.bot.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute("SELECT response_template FROM custom_commands WHERE channel_name = ? AND command_name = ?", (context, cmd_name))
-            row = await c.fetchone()
-            if row:
-                self.query_one("#cmd_name_input", Input).value = cmd_name
-                self.query_one("#cmd_resp_input", Input).value = row[0]
+        template = await self.app.bot.db.get_command(context, cmd_name)
+        if template is not None:
+            self.query_one("#cmd_name_input", Input).value = cmd_name
+            self.query_one("#cmd_resp_input", Input).value = template
 
 
 class GrammarManagerScreen(ModalScreen):
@@ -224,12 +203,9 @@ class GrammarManagerScreen(ModalScreen):
         self.table.clear()
         if not self.app.bot: return
         context = self.app.current_context.lstrip('#')
-        async with aiosqlite.connect(self.app.bot.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute("SELECT rule_name, options_json FROM custom_grammar WHERE channel_name = ?", (context,))
-            rows = await c.fetchall()
-            for row in rows:
-                self.table.add_row(row[0], row[1], key=row[0])
+        rows = await self.app.bot.db.get_grammar_all(context)
+        for row in rows:
+            self.table.add_row(row[0], row[1], key=row[0])
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "gram_save":
@@ -250,12 +226,7 @@ class GrammarManagerScreen(ModalScreen):
                 return
                 
             context = self.app.current_context.lstrip('#')
-            async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                await conn.execute(
-                    "INSERT OR REPLACE INTO custom_grammar (channel_name, rule_name, options_json) VALUES (?, ?, ?)",
-                    (context, name, opts)
-                )
-                await conn.commit()
+            await self.app.bot.db.upsert_grammar_rule(context, name, opts)
             
             self.query_one("#gram_name_input", Input).value = ""
             self.query_one("#gram_opts_input", Input).value = ""
@@ -267,9 +238,7 @@ class GrammarManagerScreen(ModalScreen):
                 row_key = self.table.coordinate_to_cell_key(self.table.cursor_coordinate).row_key
                 rule_name = row_key.value
                 context = self.app.current_context.lstrip('#')
-                async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                    await conn.execute("DELETE FROM custom_grammar WHERE channel_name = ? AND rule_name = ?", (context, rule_name))
-                    await conn.commit()
+                await self.app.bot.db.delete_grammar_rule(context, rule_name)
                 self.app.notify(f"Deleted rule: {rule_name}")
                 await self.load_data()
             except Exception:
@@ -279,10 +248,7 @@ class GrammarManagerScreen(ModalScreen):
             context = self.app.current_context.lstrip('#')
             try:
                 import json, os
-                async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                    c = await conn.cursor()
-                    await c.execute("SELECT rule_name, options_json FROM custom_grammar WHERE channel_name = ?", (context,))
-                    rows = await c.fetchall()
+                rows = await self.app.bot.db.get_grammar_all(context)
                 export_data = {row[0]: json.loads(row[1]) for row in rows}
                 filename = f"{context}_grammar_backup.json"
                 with open(filename, 'w') as f:
@@ -302,14 +268,7 @@ class GrammarManagerScreen(ModalScreen):
                 with open(filename, 'r') as f:
                     import_data = json.load(f)
                 
-                async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                    await conn.execute("DELETE FROM custom_grammar WHERE channel_name = ?", (context,))
-                    for rule_name, options_list in import_data.items():
-                        await conn.execute(
-                            "INSERT INTO custom_grammar (channel_name, rule_name, options_json) VALUES (?, ?, ?)",
-                            (context, rule_name, json.dumps(options_list))
-                        )
-                    await conn.commit()
+                await self.app.bot.db.import_grammar(context, import_data)
                 self.app.notify(f"Imported {len(import_data)} rules from {filename}")
                 await self.load_data()
             except Exception as e:
@@ -318,13 +277,10 @@ class GrammarManagerScreen(ModalScreen):
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         rule_name = event.row_key.value
         context = self.app.current_context.lstrip('#')
-        async with aiosqlite.connect(self.app.bot.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute("SELECT options_json FROM custom_grammar WHERE channel_name = ? AND rule_name = ?", (context, rule_name))
-            row = await c.fetchone()
-            if row:
-                self.query_one("#gram_name_input", Input).value = rule_name
-                self.query_one("#gram_opts_input", Input).value = row[0]
+        opts_json = await self.app.bot.db.get_grammar_rule(context, rule_name)
+        if opts_json is not None:
+            self.query_one("#gram_name_input", Input).value = rule_name
+            self.query_one("#gram_opts_input", Input).value = opts_json
 
 
 class SettingRow(Horizontal):
@@ -439,46 +395,41 @@ class SettingsManagerScreen(ModalScreen):
             return
             
         context = self.app.current_context.lstrip('#')
-        # Load all columns from channel_configs
-        async with aiosqlite.connect(self.app.bot.db_file) as conn:
-            conn.row_factory = aiosqlite.Row
-            c = await conn.cursor()
-            await c.execute("SELECT * FROM channel_configs WHERE channel_name = ?", (context,))
-            row = await c.fetchone()
-            
-            settings_list = self.query_one("#settings_list")
-            settings_list.query("*").remove()
-            
-            if not row:
-                settings_list.mount(Label("No channel configuration found. Is the bot joined to this channel?"))
-                return
-                
-            categories = {
-                "Behavior & Core Rules": ["join_channel", "use_general_model", "random_chance", "log_dice", "lines_between_messages", "time_between_messages"],
-                "External Lore Modeling": ["enabled_lore"],
-                "Twitch Event Triggers": ["pubsub_bits", "pubsub_points", "tts_reward"],
-                "TTS Fundamentals": ["tts_enabled", "voice_enabled", "tts_delay_enabled", "tts_provider", "voice_preset"],
-                "Synthesis Tuning (Bark/Chatterbox)": ["bark_model", "bark_text_temp", "bark_waveform_temp", "chatterbox_temperature", "chatterbox_exaggeration"],
-                "Voice Cloning (RVC)": ["rvc_model", "rvc_pitch", "rvc_index_rate", "rvc_api_url"]
-            }
-            
-            seen_keys = set(["channel_name", "user_id", "owner", "trusted_users", "ignored_users", "currently_connected"])
-            
-            for cat_name, keys in categories.items():
-                cat_keys = [k for k in keys if k in row.keys()]
-                if cat_keys:
-                    settings_list.mount(Label(f"── {cat_name} ──", classes="setting-category"))
-                    for key in cat_keys:
-                        desc = self.SETTINGS_META.get(key, "No description available.")
-                        settings_list.mount(SettingRow(key, row[key], desc))
-                        seen_keys.add(key)
-            
-            stragglers = [k for k in row.keys() if k not in seen_keys]
-            if stragglers:
-                settings_list.mount(Label("── Advanced / Other ──", classes="setting-category"))
-                for key in stragglers:
+        row = await self.app.bot.db.get_channel_config(context)
+
+        settings_list = self.query_one("#settings_list")
+        settings_list.query("*").remove()
+
+        if not row:
+            settings_list.mount(Label("No channel configuration found. Is the bot joined to this channel?"))
+            return
+
+        categories = {
+            "Behavior & Core Rules": ["join_channel", "use_general_model", "random_chance", "log_dice", "lines_between_messages", "time_between_messages"],
+            "External Lore Modeling": ["enabled_lore"],
+            "Twitch Event Triggers": ["pubsub_bits", "pubsub_points", "tts_reward"],
+            "TTS Fundamentals": ["tts_enabled", "voice_enabled", "tts_delay_enabled", "tts_provider", "voice_preset"],
+            "Synthesis Tuning (Bark/Chatterbox)": ["bark_model", "bark_text_temp", "bark_waveform_temp", "chatterbox_temperature", "chatterbox_exaggeration"],
+            "Voice Cloning (RVC)": ["rvc_model", "rvc_pitch", "rvc_index_rate", "rvc_api_url"]
+        }
+
+        seen_keys = set(["channel_name", "user_id", "owner", "trusted_users", "ignored_users", "currently_connected"])
+
+        for cat_name, keys in categories.items():
+            cat_keys = [k for k in keys if k in row.keys()]
+            if cat_keys:
+                settings_list.mount(Label(f"── {cat_name} ──", classes="setting-category"))
+                for key in cat_keys:
                     desc = self.SETTINGS_META.get(key, "No description available.")
                     settings_list.mount(SettingRow(key, row[key], desc))
+                    seen_keys.add(key)
+
+        stragglers = [k for k in row.keys() if k not in seen_keys]
+        if stragglers:
+            settings_list.mount(Label("── Advanced / Other ──", classes="setting-category"))
+            for key in stragglers:
+                desc = self.SETTINGS_META.get(key, "No description available.")
+                settings_list.mount(SettingRow(key, row[key], desc))
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
@@ -548,23 +499,11 @@ class TimersManagerScreen(ModalScreen):
         self.table.clear()
         if not self.app.bot: return
         context = self.app.current_context.lstrip('#')
-        async with aiosqlite.connect(self.app.bot.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute(
-                "SELECT pool_name, interval_minutes FROM timed_message_pools WHERE channel_name = ?", 
-                (context,)
-            )
-            pools = await c.fetchall()
-            
-            for pool in pools:
-                pool_name, interval = pool[0], pool[1]
-                # get messages
-                await c.execute("SELECT message_text FROM timed_messages WHERE channel_name = ? AND pool_name = ?", (context, pool_name))
-                msgs = await c.fetchall()
-                msg_list = [m[0] for m in msgs]
-                import json
-                msg_json = json.dumps(msg_list)
-                self.table.add_row(pool_name, str(interval), msg_json, key=pool_name)
+        import json
+        pools = await self.app.bot.db.get_timed_pools(context)
+        for pool_name, interval in pools:
+            msgs = await self.app.bot.db.get_pool_messages(context, pool_name)
+            self.table.add_row(pool_name, str(interval), json.dumps(msgs), key=pool_name)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "timer_save":
@@ -592,22 +531,7 @@ class TimersManagerScreen(ModalScreen):
                 return
                 
             context = self.app.current_context.lstrip('#')
-            async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                # Upsert pool
-                await conn.execute(
-                    "INSERT OR REPLACE INTO timed_message_pools (channel_name, pool_name, interval_minutes) VALUES (?, ?, ?)",
-                    (context, name, interval)
-                )
-                # Clear old messages
-                await conn.execute("DELETE FROM timed_messages WHERE channel_name = ? AND pool_name = ?", (context, name))
-                
-                # Insert new messages
-                for msg in parsed_msgs:
-                    await conn.execute(
-                        "INSERT INTO timed_messages (channel_name, pool_name, message_text) VALUES (?, ?, ?)",
-                        (context, name, str(msg))
-                    )
-                await conn.commit()
+            await self.app.bot.db.upsert_timed_pool_with_messages(context, name, interval, parsed_msgs)
             
             self.query_one("#timer_name_input", Input).value = ""
             self.query_one("#timer_interval_input", Input).value = ""
@@ -620,11 +544,8 @@ class TimersManagerScreen(ModalScreen):
                 row_key = self.table.coordinate_to_cell_key(self.table.cursor_coordinate).row_key
                 pool_name = row_key.value
                 context = self.app.current_context.lstrip('#')
-                async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                    # Cascade should handle timed_messages if enabled, but manual deletion is safer 
-                    await conn.execute("DELETE FROM timed_messages WHERE channel_name = ? AND pool_name = ?", (context, pool_name))
-                    await conn.execute("DELETE FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?", (context, pool_name))
-                    await conn.commit()
+                await self.app.bot.db.delete_pool_messages(context, pool_name)
+                await self.app.bot.db.delete_timed_pool(context, pool_name)
                 self.app.notify(f"Deleted timer: {pool_name}")
                 await self.load_data()
             except Exception:
@@ -633,19 +554,14 @@ class TimersManagerScreen(ModalScreen):
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         pool_name = event.row_key.value
         context = self.app.current_context.lstrip('#')
-        async with aiosqlite.connect(self.app.bot.db_file) as conn:
-            c = await conn.cursor()
-            await c.execute("SELECT interval_minutes FROM timed_message_pools WHERE channel_name = ? AND pool_name = ?", (context, pool_name))
-            row = await c.fetchone()
-            if row:
-                self.query_one("#timer_name_input", Input).value = pool_name
-                self.query_one("#timer_interval_input", Input).value = str(row[0])
-                
-                await c.execute("SELECT message_text FROM timed_messages WHERE channel_name = ? AND pool_name = ?", (context, pool_name))
-                msgs = await c.fetchall()
-                msg_list = [m[0] for m in msgs]
-                import json
-                self.query_one("#timer_msgs_input", Input).value = json.dumps(msg_list)
+        pools = await self.app.bot.db.get_timed_pools(context)
+        pool_map = {p[0]: p[1] for p in pools}
+        if pool_name in pool_map:
+            import json
+            self.query_one("#timer_name_input", Input).value = pool_name
+            self.query_one("#timer_interval_input", Input).value = str(pool_map[pool_name])
+            msgs = await self.app.bot.db.get_pool_messages(context, pool_name)
+            self.query_one("#timer_msgs_input", Input).value = json.dumps(msgs)
 
 
 class TTSHistoryScreen(ModalScreen):
@@ -687,21 +603,11 @@ class TTSHistoryScreen(ModalScreen):
             return
             
         context = self.app.current_context
-        query = "SELECT timestamp, channel, voice_preset, message, file_path FROM tts_logs"
-        params = ()
-        
-        if context != "Global":
-            query += " WHERE channel = ?"
-            params = (context.lstrip('#'),)
-            
-        query += " ORDER BY timestamp DESC LIMIT 100"
-            
-        import aiosqlite, json
+        channel = None if context == "Global" else context.lstrip('#')
+
+        import json
         try:
-            async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                c = await conn.cursor()
-                await c.execute(query, params)
-                rows = await c.fetchall()
+            rows = await self.app.bot.db.get_tts_logs(channel=channel, limit=100)
                 
             for row in rows:
                 timestamp, ch, voice, msg, fpath = row
@@ -784,19 +690,14 @@ class TTSHistoryScreen(ModalScreen):
             asyncio.create_task(self._clean_orphans())
 
     async def _clean_orphans(self) -> None:
-        import aiosqlite, os
+        import os
         count = 0
         try:
-            async with aiosqlite.connect(self.app.bot.db_file) as conn:
-                c = await conn.cursor()
-                await c.execute("SELECT message_id, file_path FROM tts_logs")
-                rows = await c.fetchall()
-                
-                for msg_id, file_path in rows:
-                    if not os.path.exists(file_path):
-                        await c.execute("DELETE FROM tts_logs WHERE message_id = ?", (msg_id,))
-                        count += 1
-                await conn.commit()
+            rows = await self.app.bot.db.get_all_tts_log_files()
+            for msg_id, file_path in rows:
+                if not os.path.exists(file_path):
+                    await self.app.bot.db.delete_tts_log(msg_id)
+                    count += 1
                 
             self.app.notify(f"Purged {count} orphaned TTS logs from DB!")
             await self.load_data()

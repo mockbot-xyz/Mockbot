@@ -8,11 +8,12 @@ from datetime import datetime
 import sqlite3
 import threading
 
-sqlite_tts_lock = threading.Lock()
+_db = None  # set by init_tts_db() after Bot.__init__ creates Database
 
-def thread_safe_db_connect(db_file, timeout=15.0):
-    with sqlite_tts_lock:
-        return sqlite3.connect(db_file, timeout=timeout)
+
+def init_tts_db(database) -> None:
+    global _db
+    _db = database
 
 import requests
 import sys
@@ -35,10 +36,6 @@ def _patched_torch_load(*args, **kwargs):
 torch.load = _patched_torch_load
 
 VOICES_DIRECTORY = './voices'
-db_file = 'messages.db'
-
-# Define database file
-db_file = 'messages.db'
 
 
 # PERFORMANCE: TTS Model Cache and Thread Pool
@@ -158,108 +155,72 @@ tts_model_cache = TTSModelCache()
 tts_thread_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts-worker")
 
 def fetch_latest_message():
+    if _db is None:
+        return (None, None, None, None, None)
     try:
-        logging.debug(f"Fetching latest message from database: {db_file}")
-        conn = thread_safe_db_connect(db_file)
-        c = conn.cursor()
-        c.execute("SELECT id, channel, timestamp, message_length, message FROM messages ORDER BY id DESC LIMIT 1")
-        result = c.fetchone()
+        result = _db.fetch_latest_message_sync()
         logging.debug(f"Latest message fetched: {result}")
-        conn.close()
-        return result if result else (None, None, None, None, None)
+        return result
     except sqlite3.Error as e:
         logging.error(f"SQLite error in fetch_latest_message: {e}")
         raise
 
 @lru_cache(maxsize=100)
-def get_voice_preset_cached(channel_name, db_file_path):
-    """PERFORMANCE: Cached voice preset lookup to avoid repeated DB queries"""
-    try:
-        # Check for default preset from command line
-        default_preset = os.environ.get("DEFAULT_VOICE_PRESET")
-        if default_preset:
-            return default_preset
-        
-        conn = thread_safe_db_connect(db_file_path)
-        c = conn.cursor()
-        c.execute("SELECT voice_preset FROM channel_configs WHERE channel_name = ?", (channel_name,))
-        result = c.fetchone()
-        return result[0] if result else 'v2/en_speaker_5'
-    finally:
-        conn.close()
+def _get_tts_config_cached(channel_name):
+    """PERFORMANCE: Cached TTS config fetch — single DB round-trip per channel."""
+    if _db is None:
+        return {}
+    return _db.get_tts_config_sync(channel_name)
 
-def get_voice_preset(channel_name, db_file):
-    """Get voice preset with caching for performance"""
-    return get_voice_preset_cached(channel_name, db_file)
-        
-@lru_cache(maxsize=100)
-def get_bark_model_cached(channel_name, db_file_path):
-    """PERFORMANCE: Cached bark model lookup to avoid repeated DB queries"""
-    try:
-        # Check for default model from environment
-        default_model = os.environ.get("DEFAULT_BARK_MODEL")
-        if default_model:
-            return default_model
-        
-        conn = thread_safe_db_connect(db_file_path)
-        c = conn.cursor()
-        c.execute("SELECT bark_model FROM channel_configs WHERE channel_name = ?", (channel_name,))
-        result = c.fetchone()
-        return result[0] if result else 'regular'
-    except Exception as e:
-        logging.error(f"Error getting bark model for channel {channel_name}: {e}")
-        return 'regular'
-    finally:
-        conn.close()
 
-def get_bark_model_for_channel(channel_name, db_file):
-    """Get bark model with caching for performance"""
-    return get_bark_model_cached(channel_name, db_file)
+def _get_tts_config(channel_name):
+    return _get_tts_config_cached(channel_name)
 
-@lru_cache(maxsize=100)
-def get_tts_provider_cached(channel_name, db_file_path):
-    """PERFORMANCE: Cached TTS provider lookup to avoid repeated DB queries"""
-    try:
-        conn = thread_safe_db_connect(db_file_path)
-        c = conn.cursor()
-        c.execute("SELECT tts_provider FROM channel_configs WHERE channel_name = ?", (channel_name,))
-        result = c.fetchone()
-        return result[0] if result else 'bark'
-    except Exception as e:
-        logging.error(f"Error getting tts provider for channel {channel_name}: {e}")
-        return 'bark'
-    finally:
-        conn.close()
 
-def get_tts_provider_for_channel(channel_name, db_file):
-    """Get tts provider with caching for performance"""
-    return get_tts_provider_cached(channel_name, db_file)
+# Keep individual lookup helpers so call sites in process_text_thread don't change.
 
-@lru_cache(maxsize=100)
-def get_advanced_tts_configs_cached(channel_name, db_file_path):
-    try:
-        conn = thread_safe_db_connect(db_file_path)
-        c = conn.cursor()
-        c.execute("""SELECT rvc_model, chatterbox_temperature, 
-                     chatterbox_exaggeration, bark_text_temp, bark_waveform_temp, rvc_pitch, rvc_index_rate, rvc_api_url 
-                     FROM channel_configs WHERE channel_name = ?""", (channel_name,))
-        result = c.fetchone()
-        if result:
-            return {
-                'rvc_model': result[0] or '',
-                'chatterbox_temperature': result[1] if result[1] is not None else 0.8,
-                'chatterbox_exaggeration': result[2] if result[2] is not None else 0.5,
-                'bark_text_temp': result[3] if result[3] is not None else 0.7,
-                'bark_waveform_temp': result[4] if result[4] is not None else 0.7,
-                'rvc_pitch': result[5] if result[5] is not None else 0,
-                'rvc_index_rate': result[6] if result[6] is not None else 0.75,
-                'rvc_api_url': result[7] if result[7] is not None else 'http://127.0.0.1:5051'
-            }
-    except Exception as e:
-        logging.error(f"Error getting advanced tts configs: {e}")
-    finally:
-        conn.close()
-    return {'rvc_model': '', 'chatterbox_temperature': 0.8, 'chatterbox_exaggeration': 0.5, 'bark_text_temp': 0.7, 'bark_waveform_temp': 0.7, 'rvc_pitch': 0, 'rvc_index_rate': 0.75, 'rvc_api_url': 'http://127.0.0.1:5051'}
+def get_voice_preset_cached(channel_name, db_file_path=None):
+    default = os.environ.get("DEFAULT_VOICE_PRESET")
+    if default:
+        return default
+    return _get_tts_config(channel_name).get("voice_preset", "v2/en_speaker_5")
+
+
+def get_voice_preset(channel_name, db_file=None):
+    return get_voice_preset_cached(channel_name)
+
+
+def get_bark_model_cached(channel_name, db_file_path=None):
+    default = os.environ.get("DEFAULT_BARK_MODEL")
+    if default:
+        return default
+    return _get_tts_config(channel_name).get("bark_model", "regular")
+
+
+def get_bark_model_for_channel(channel_name, db_file=None):
+    return get_bark_model_cached(channel_name)
+
+
+def get_tts_provider_cached(channel_name, db_file_path=None):
+    return _get_tts_config(channel_name).get("tts_provider", "bark")
+
+
+def get_tts_provider_for_channel(channel_name, db_file=None):
+    return get_tts_provider_cached(channel_name)
+
+
+def get_advanced_tts_configs_cached(channel_name, db_file_path=None):
+    cfg = _get_tts_config(channel_name)
+    return {
+        "rvc_model": cfg.get("rvc_model", ""),
+        "chatterbox_temperature": cfg.get("chatterbox_temperature", 0.8),
+        "chatterbox_exaggeration": cfg.get("chatterbox_exaggeration", 0.5),
+        "bark_text_temp": cfg.get("bark_text_temp", 0.7),
+        "bark_waveform_temp": cfg.get("bark_waveform_temp", 0.7),
+        "rvc_pitch": cfg.get("rvc_pitch", 0),
+        "rvc_index_rate": cfg.get("rvc_index_rate", 0.75),
+        "rvc_api_url": cfg.get("rvc_api_url", "http://127.0.0.1:5051"),
+    }
 
 def apply_rvc_conversion(input_path, rvc_model_name, pitch=0, index_rate=0.75):
     if not rvc_model_name: return False
@@ -316,27 +277,12 @@ def apply_rvc_conversion(input_path, rvc_model_name, pitch=0, index_rate=0.75):
         logging.getLogger('bot').error(f"[RVC ENGINE] Tunnel utterly crashed: {e}", exc_info=True)
         return False
 
-def log_tts_file(message_id, channel_name, timestamp, file_path, voice_preset, input_text, db_file):
+def log_tts_file(message_id, channel_name, timestamp, file_path, voice_preset, input_text, db_file=None):
     file_path = file_path.replace('static/', '', 1)
-    if not voice_preset:
-        voice_preset = 'v2/en_speaker_5'
-    conn = None
-    try:
-        conn = thread_safe_db_connect(db_file, timeout=10.0) # Added timeout
-        c = conn.cursor()
-        # Using INSERT OR IGNORE to handle potential duplicate message_ids gracefully
-        c.execute("INSERT OR IGNORE INTO tts_logs (message_id, channel, timestamp, file_path, voice_preset, message) VALUES (?, ?, ?, ?, ?, ?)",
-                (message_id, channel_name, timestamp, file_path, voice_preset, input_text))
-        conn.commit()
-        if c.rowcount == 0:
-            logging.warning(f"[log_tts_file] Insert to tts_logs IGNORED for message_id {message_id} (likely duplicate).")
-        else:
-            logging.info(f"[log_tts_file] Successfully inserted into tts_logs for message_id {message_id}.")
-    except sqlite3.Error as e:
-        logging.error(f"[log_tts_file] SQLite error for message_id {message_id}: {e}")
-    finally:
-        if conn:
-            conn.close()
+    if _db is not None:
+        _db.log_tts_sync(message_id, channel_name, file_path, voice_preset or "v2/en_speaker_5", input_text, timestamp)
+    else:
+        logging.warning("[log_tts_file] _db not initialised, skipping TTS log.")
 
 def initialize_tts():
     global AutoProcessor, BarkModel, torch, scipy
@@ -549,47 +495,22 @@ def process_text_thread(input_text, channel_name, db_file='./messages.db', full_
                     logging.warning(f"[TTS DB LOG] Warning: Original message timestamp (timestamp param) is None for message_id {message_id}. Using current time for TTS log.")
                     timestamp_for_log = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-                db_conn_tts_log = None
                 try:
                     logging.getLogger('bot').info(f"✅ [bold green]TTS Generation Complete![/bold green] Saved to {db_file_path_relative}", extra={'channel': channel_name})
-                    db_conn_tts_log = thread_safe_db_connect(db_file, timeout=10.0) # Added timeout
-                    c = db_conn_tts_log.cursor()
-                    
-                    c.execute('''INSERT OR IGNORE INTO tts_logs 
-                                (message_id, channel, timestamp, voice_preset, file_path, message)
-                                VALUES (?, ?, ?, ?, ?, ?)''', # Ensured INSERT OR IGNORE
-                            (message_id, channel_name, timestamp_for_log, voice_preset, db_file_path_relative, input_text))
-                    db_conn_tts_log.commit()
-                    
-                    if c.rowcount == 0:
-                        logging.warning(f"[TTS DB LOG] Insert to tts_logs IGNORED for message_id {message_id} (likely duplicate or other constraint).")
-                        # Attempt to fetch existing log_id if it was ignored due to duplicate
-                        c.execute("SELECT ROWID FROM tts_logs WHERE message_id = ?", (message_id,))
-                        existing_row = c.fetchone()
-                        if existing_row:
-                            logged_tts_table_id = existing_row[0]
-                            logging.info(f"[TTS DB LOG] Found existing tts_logs ROWID: {logged_tts_table_id} for message_id {message_id}.")
-                        else: # Should not happen if PK is message_id and it was a duplicate
-                            logged_tts_table_id = None 
+                    if _db is not None:
+                        logged_tts_table_id = _db.log_tts_sync(
+                            message_id, channel_name, db_file_path_relative,
+                            voice_preset, input_text, timestamp_for_log,
+                        )
+                        if logged_tts_table_id is None:
+                            logging.warning(f"[TTS DB LOG] Insert IGNORED for message_id {message_id} (likely duplicate).")
+                        else:
+                            logging.info(f"[TTS DB LOG] Logged ROWID {logged_tts_table_id} for message_id {message_id}.")
                     else:
-                        logged_tts_table_id = c.lastrowid 
-                        logging.info(f"[TTS DB LOG] Successfully logged. TTS Log Table ID (ROWID): {logged_tts_table_id}, Original Message ID: {message_id}.")
-                
-                except sqlite3.IntegrityError as integrity_err:
-                    # This block might be hit if "datatype mismatch" is the true issue, not handled by INSERT OR IGNORE.
-                    logging.error(f"[TTS DB LOG] SQLite IntegrityError (message_id: {message_id}): {integrity_err}. This might indicate a schema mismatch if not a duplicate.")
-                    logging.error(f"[TTS DB LOG] Failed Data: message_id={message_id}, channel={channel_name}, timestamp={timestamp_for_log}, voice={voice_preset}, path={db_file_path_relative}, text='{str(input_text)[:30]}...'")
-                    logged_tts_table_id = None 
-                except sqlite3.Error as db_err: 
-                    logging.error(f"[TTS DB LOG] Other SQLite error during tts_logs insert (message_id: {message_id}): {db_err}")
-                    logging.error(f"[TTS DB LOG] Data was: message_id={message_id}, channel={channel_name}, timestamp={timestamp_for_log}, voice={voice_preset}, path={db_file_path_relative}, text='{str(input_text)[:30]}...'")
-                    logged_tts_table_id = None 
+                        logging.warning("[TTS DB LOG] _db not initialised, skipping log.")
                 except Exception as general_db_err:
-                    logging.error(f"[TTS DB LOG] General error during tts_logs insert (message_id: {message_id}): {general_db_err}", exc_info=True)
+                    logging.error(f"[TTS DB LOG] Error during tts_logs insert (message_id: {message_id}): {general_db_err}", exc_info=True)
                     logged_tts_table_id = None
-                finally:
-                    if db_conn_tts_log:
-                        db_conn_tts_log.close()
 
             # Unconditionally broadcast to OBS overlay regardless of database insertion status
             active_model = adv_cfg.get('rvc_model', '') if tts_provider in ['rvc', 'rvc_chatterbox'] else voice_preset

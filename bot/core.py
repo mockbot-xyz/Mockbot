@@ -3,7 +3,6 @@ import twitchio.ext.pubsub as pubsub
 import logging
 import markovify
 import asyncio
-import configparser
 import time
 import sqlite3
 import aiosqlite
@@ -21,14 +20,10 @@ from tabulate import tabulate
 from bot.logger import Logger
 from bot.color_control import ColorManager
 from bot.commands import mockbot_command
-from bot.db import ensure_db_setup
+from bot.config import config
 from bot.tts import process_text, start_tts_processing # Added start_tts_processing
 
-config = configparser.ConfigParser()
-config.read("settings.conf")
-
-db_file = "messages.db"  # Replace with your actual database file path
-ensure_db_setup(db_file)
+db_file = "messages.db"
 
 
 logger = Logger()
@@ -48,7 +43,7 @@ PURPLE = "\x1b[35m"
 
 # Try to extract the channels - with error handling
 try:
-    channels = config["settings"]["channels"].split(",")
+    channels = config.channels
 except Exception as e:
     logger.logger.info(f"{RED}Error reading channels from config: {e}{RESET}")
     channels = []
@@ -267,6 +262,12 @@ class Bot(commands.Bot):
         self.message_queue = [] # Queue for async DB bulk inserts
         self.db_flush_task = None
         self.db_file = db_file
+        from bot.database import Database
+        self.db = Database(db_file)
+        from bot import tts as _tts_mod
+        _tts_mod.init_tts_db(self.db)
+        from bot import overlay as _overlay_mod
+        _overlay_mod.set_overlay_db(db_file)
         self.load_channel_settings()  # Populate channel settings
 
         self.rebuild_cache = rebuild_cache
@@ -292,10 +293,7 @@ class Bot(commands.Bot):
             tts.initialize_tts()
         
         # Read verbose_heartbeat_log setting
-        try:
-            self.verbose_heartbeat_log = config.getboolean('settings', 'verbose_heartbeat_log')
-        except (configparser.NoSectionError, configparser.NoOptionError):
-            self.verbose_heartbeat_log = False # Default to False if not found
+        self.verbose_heartbeat_log = config.getboolean('settings', 'verbose_heartbeat_log', fallback=False)
             # print(f"{YELLOW}Warning: 'verbose_heartbeat_log' not found in settings.conf, defaulting to False.{RESET}")
 
         self._joined_channels = set()
@@ -509,8 +507,8 @@ class Bot(commands.Bot):
                 self.logger.info(f"{YELLOW}Found {len(channels_to_join)} channels to join from database{RESET}")
             
             # If no channels found in database, check config file
-            if not channels_to_join and "settings" in config and "channels" in config["settings"]:
-                config_channels = config["settings"]["channels"].split(",")
+            if not channels_to_join and config.channels:
+                config_channels = config.channels
                 channels_to_join = [ch.strip() for ch in config_channels if ch.strip()]
                 if not silent:
                     self.logger.info(f"{YELLOW}No channels in database, using {len(channels_to_join)} from config file{RESET}")
@@ -1636,9 +1634,8 @@ class Bot(commands.Bot):
         try:
             if verbose:
                 self.logger.info(f"{YELLOW}Step 3: Processing channels from config file...{RESET}")
-            if "settings" in config and "channels" in config["settings"]:
-                config_channels = config["settings"]["channels"].split(",")
-                config_channels = [ch.strip() for ch in config_channels if ch.strip()]
+            if config.channels:
+                config_channels = [ch.strip() for ch in config.channels if ch.strip()]
                 
                 if verbose:
                     self.logger.info(f"{YELLOW}Found {len(config_channels)} channels in config file{RESET}")
@@ -2394,8 +2391,7 @@ class Bot(commands.Bot):
                             
                             # Security Check
                             # The sender MUST be a moderator, the broadcaster, the global bot owner, OR they are targeting themselves.
-                            config.read("settings.conf")
-                            bot_owner = config.get("auth", "owner", fallback="").lower()
+                            bot_owner = config.owner.lower()
                             
                             is_mod = message.author.is_mod
                             is_broadcaster = message.author.is_broadcaster
@@ -3190,14 +3186,9 @@ def insert_initial_channels_to_db(db_file, channels):
 
 
 def setup_bot(db_file, rebuild_cache=False, enable_tts=False):
-    # Read configuration from file
-    config = configparser.ConfigParser()
-    config.read('settings.conf')
-    
-    # Get bot credentials
-    token = config.get('auth', 'tmi_token')
-    client_id = config.get('auth', 'client_id')
-    nick = config.get('auth', 'nickname')
+    token = config.tmi_token
+    client_id = config.client_id
+    nick = config.nickname
     
     # Get channels to join from database
     channels_str_list = fetch_initial_channels(db_file)

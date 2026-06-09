@@ -11,6 +11,14 @@ connected_clients = {}
 # Global reference to the main event loop
 main_loop = None
 
+# DB path injected by Bot.__init__ via set_overlay_db()
+_db_file: str = "messages.db"
+
+
+def set_overlay_db(db_file: str) -> None:
+    global _db_file
+    _db_file = db_file
+
 async def serve_overlay(request):
     """Serve the static HTML for the OBS browser source."""
     channel = request.match_info.get('channel', '').lower()
@@ -327,9 +335,7 @@ async def api_get_variables(request):
         
     variables = {}
     try:
-        # The actual DB file used by the bot is messages.db
-        # To be safe, try to connect to the current directory's DB
-        async with aiosqlite.connect("messages.db") as conn:
+        async with aiosqlite.connect(_db_file) as conn:
             c = await conn.cursor()
             await c.execute("SELECT var_name, var_value FROM channel_variables WHERE channel_name = ?", (channel,))
             rows = await c.fetchall()
